@@ -339,9 +339,16 @@ class PluginManager:
         root_dir_name: str,
         requirements_path: str,
     ) -> ModuleType:
+        package_prefix = path.rsplit(".", 1)[0]
         try:
             return __import__(path, fromlist=[module_str])
         except (ModuleNotFoundError, ImportError) as import_exc:
+            missing_module_name = getattr(import_exc, "name", None)
+            if isinstance(missing_module_name, str) and (
+                missing_module_name == package_prefix
+                or missing_module_name.startswith(f"{package_prefix}.")
+            ):
+                raise
             if os.path.exists(requirements_path):
                 try:
                     logger.info(
