@@ -240,13 +240,23 @@ class PluginManager:
     @staticmethod
     def _get_classes(arg: ModuleType):
         """获取指定模块（可以理解为一个 python 文件）下所有的类"""
+        from .base import Star as BaseStar
+
         classes = []
+        fallback_classes = []
         clsmembers = inspect.getmembers(arg, inspect.isclass)
-        for name, _ in clsmembers:
+        for name, cls in clsmembers:
+            if getattr(cls, "__module__", None) != arg.__name__:
+                continue
             if name.lower().endswith("plugin") or name.lower() == "main":
                 classes.append(name)
                 break
-        return classes
+            try:
+                if issubclass(cls, BaseStar) and cls is not BaseStar:
+                    fallback_classes.append(name)
+            except TypeError:
+                continue
+        return classes or fallback_classes
 
     @staticmethod
     def _get_modules(path):
@@ -958,21 +968,27 @@ class PluginManager:
                         f"插件 {path} 未通过装饰器注册。尝试通过旧版本方式载入。",
                     )
                     classes = self._get_classes(module)
+                    plugin_cls = getattr(module, classes[0]) if classes else None
+                    obj = None
 
                     if path not in inactivated_plugins:
+                        if plugin_cls is None:
+                            raise RuntimeError(
+                                f"插件 {root_dir_name} 未找到可实例化的插件类。"
+                            )
                         # 只有没有禁用插件时才实例化插件类
                         if plugin_config:
                             try:
-                                obj = getattr(module, classes[0])(
+                                obj = plugin_cls(
                                     context=self.context,
                                     config=plugin_config,
                                 )  # 实例化插件类
                             except TypeError as _:
-                                obj = getattr(module, classes[0])(
+                                obj = plugin_cls(
                                     context=self.context,
                                 )  # 实例化插件类
                         else:
-                            obj = getattr(module, classes[0])(
+                            obj = plugin_cls(
                                 context=self.context,
                             )  # 实例化插件类
 
@@ -981,7 +997,9 @@ class PluginManager:
                         plugin_obj=obj,
                     )
                     if not metadata:
-                        raise Exception(f"无法找到插件 {plugin_dir_path} 的元数据。")
+                        raise RuntimeError(
+                            f"无法获取模块 {module.__name__} 的元数据信息"
+                        )
 
                     if not ignore_version_check:
                         is_valid, error_message = (
@@ -1000,7 +1018,7 @@ class PluginManager:
                     metadata.module = module
                     metadata.root_dir_name = root_dir_name
                     metadata.reserved = reserved
-                    metadata.star_cls_type = obj.__class__
+                    metadata.star_cls_type = plugin_cls
                     metadata.module_path = path
                     star_map[path] = metadata
                     star_registry.append(metadata)

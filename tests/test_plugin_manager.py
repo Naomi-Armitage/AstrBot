@@ -1,11 +1,13 @@
 import asyncio
 import os
 from pathlib import Path
+from types import ModuleType
 from typing import Any, cast
 
 import pytest
 import yaml
 
+from astrbot.core.star.star import star_map, star_registry
 from astrbot.core.star.star_manager import PluginDependencyInstallError, PluginManager
 from astrbot.core.utils.pip_installer import PipInstallError
 from astrbot.core.utils.requirements_utils import MissingRequirementsPlan
@@ -684,6 +686,84 @@ async def test_ensure_plugin_requirements_does_not_mask_install_error_when_clean
         )
 
     assert any("删除临时插件依赖文件失败" in log for log in warning_logs)
+
+
+@pytest.mark.asyncio
+async def test_load_inactivated_legacy_plugin_reads_metadata_without_instantiating(
+    plugin_manager_pm: PluginManager,
+    local_updator: Path,
+    monkeypatch,
+):
+    del local_updator
+    module_path = f"data.plugins.{TEST_PLUGIN_DIR}.main"
+    module = ModuleType(module_path)
+    legacy_cls = type(
+        "LegacyPlugin",
+        (),
+        {
+            "__module__": module_path,
+            "__init__": lambda self, context: None,
+        },
+    )
+    module.LegacyPlugin = legacy_cls
+
+    original_star_map = dict(star_map)
+    original_star_registry = list(star_registry)
+    star_map.clear()
+    star_registry.clear()
+    plugin_manager_pm.failed_plugin_dict.clear()
+
+    async def mock_global_get(key, default=None):
+        values = {
+            "inactivated_plugins": [module_path],
+            "inactivated_llm_tools": [],
+            "alter_cmd": {},
+        }
+        return values.get(key, default)
+
+    async def mock_import_plugin_with_dependency_recovery(**kwargs):
+        del kwargs
+        return module
+
+    async def mock_sync_command_configs():
+        return None
+
+    monkeypatch.setattr(
+        plugin_manager_pm,
+        "_get_plugin_modules",
+        lambda: [{"module": "main", "pname": TEST_PLUGIN_DIR, "reserved": False}],
+    )
+    monkeypatch.setattr(
+        plugin_manager_pm,
+        "_import_plugin_with_dependency_recovery",
+        mock_import_plugin_with_dependency_recovery,
+    )
+    monkeypatch.setattr(
+        "astrbot.core.star.star_manager.sp.global_get",
+        mock_global_get,
+    )
+    monkeypatch.setattr(
+        "astrbot.core.star.star_manager.sync_command_configs",
+        mock_sync_command_configs,
+    )
+
+    try:
+        success, error_message = await plugin_manager_pm.load(
+            specified_dir_name=TEST_PLUGIN_DIR
+        )
+
+        assert success is True
+        assert error_message is None
+        metadata = star_map[module_path]
+        assert metadata.name == TEST_PLUGIN_NAME
+        assert metadata.star_cls is None
+        assert metadata.star_cls_type is legacy_cls
+        assert metadata.activated is False
+    finally:
+        star_map.clear()
+        star_map.update(original_star_map)
+        star_registry.clear()
+        star_registry.extend(original_star_registry)
 
 
 @pytest.mark.asyncio

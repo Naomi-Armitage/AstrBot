@@ -292,10 +292,31 @@ class StarTools:
 
             metadata = star_map.get(module.__name__, None)
 
-            if not metadata:
-                raise RuntimeError(f"无法获取模块 {module.__name__} 的元数据信息")
+            if metadata and metadata.name:
+                plugin_name = metadata.name
 
-            plugin_name = metadata.name
+            if not plugin_name:
+                module_file = getattr(module, "__file__", None)
+                if module_file:
+                    metadata_path = Path(module_file).resolve().parent / "metadata.yaml"
+                    if metadata_path.exists():
+                        try:
+                            import yaml
+
+                            raw_metadata = yaml.safe_load(
+                                metadata_path.read_text(encoding="utf-8")
+                            )
+                            if isinstance(raw_metadata, dict):
+                                plugin_name = raw_metadata.get("name")
+                            if not plugin_name:
+                                plugin_name = metadata_path.parent.name
+                        except Exception as exc:
+                            raise RuntimeError(
+                                f"无法获取模块 {module.__name__} 的元数据信息: {exc!s}"
+                            ) from exc
+
+            if not plugin_name:
+                raise RuntimeError(f"无法获取模块 {module.__name__} 的元数据信息")
 
         if not plugin_name:
             raise ValueError("无法获取插件名称")
