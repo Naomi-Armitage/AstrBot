@@ -1,6 +1,7 @@
 """Tests for astr_main_agent module."""
 
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -662,6 +663,94 @@ class TestDecorateLlmRequest:
             await module._decorate_llm_request(mock_event, req, mock_context, config)
 
         assert req.prompt == "Hello"
+
+
+class TestImageCaptionResilience:
+    """Tests for image caption resilience in astr_main_agent."""
+
+    @pytest.mark.asyncio
+    async def test_request_img_caption_sanitizes_prompt_and_urls(self, mock_provider):
+        """Test _request_img_caption sanitizes None prompt and invalid URLs."""
+        module = ama
+        mock_provider.text_chat = AsyncMock(
+            return_value=SimpleNamespace(completion_text=None)
+        )
+        plugin_context = MagicMock()
+        plugin_context.get_provider_by_id.return_value = mock_provider
+
+        caption = await module._request_img_caption(
+            "test-provider",
+            {"image_caption_prompt": None},
+            [None, "", "   ", " https://img.example.com/a.jpg "],
+            plugin_context,
+        )
+
+        assert caption == ""
+        mock_provider.text_chat.assert_awaited_once()
+        kwargs = mock_provider.text_chat.call_args.kwargs
+        assert kwargs["prompt"] == "Please describe the image."
+        assert kwargs["image_urls"] == ["https://img.example.com/a.jpg"]
+
+    @pytest.mark.asyncio
+    async def test_request_img_caption_skips_when_no_valid_urls(self, mock_provider):
+        """Test _request_img_caption skips provider call for invalid image URLs."""
+        module = ama
+        mock_provider.text_chat = AsyncMock(
+            return_value=SimpleNamespace(completion_text="unused")
+        )
+        plugin_context = MagicMock()
+        plugin_context.get_provider_by_id.return_value = mock_provider
+
+        caption = await module._request_img_caption(
+            "test-provider",
+            {"image_caption_prompt": "Describe"},
+            [None, "", "   "],
+            plugin_context,
+        )
+
+        assert caption == ""
+        mock_provider.text_chat.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_process_quote_message_skips_invalid_image_path(self, mock_provider):
+        """Test quote image captioning skips invalid image path safely."""
+        module = ama
+        mock_provider.text_chat = AsyncMock(
+            return_value=SimpleNamespace(completion_text="unused")
+        )
+        plugin_context = MagicMock()
+        plugin_context.get_provider_by_id.return_value = mock_provider
+        plugin_context.get_using_provider.return_value = mock_provider
+
+        image_seg = Image(file="https://img.example.com/q.jpg")
+        reply = Reply(id="1001", chain=[image_seg], message_str="quoted")
+
+        event = MagicMock(spec=AstrMessageEvent)
+        event.unified_msg_origin = "test_platform:group:123"
+        event.message_obj = MagicMock(message=[reply])
+
+        req = ProviderRequest()
+
+        with (
+            patch(
+                "astrbot.core.astr_main_agent.extract_quoted_message_text",
+                new=AsyncMock(return_value="quoted text"),
+            ),
+            patch(
+                "astrbot.core.message.components.Image.convert_to_file_path",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            await module._process_quote_message(
+                event,
+                req,
+                "test-provider",
+                plugin_context,
+            )
+
+        mock_provider.text_chat.assert_not_awaited()
+        assert req.extra_user_content_parts
+        assert "quoted text" in req.extra_user_content_parts[0].text
 
 
 class TestModalitiesFix:

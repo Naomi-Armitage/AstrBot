@@ -8,7 +8,7 @@ from typing import cast
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import BotCommand, Update
 from telegram.constants import ChatType
-from telegram.error import Forbidden, InvalidToken
+from telegram.error import BadRequest, Forbidden, InvalidToken
 from telegram.ext import ApplicationBuilder, ContextTypes, ExtBot, filters
 from telegram.ext import MessageHandler as TelegramMessageHandler
 
@@ -398,8 +398,10 @@ class TelegramPlatformAdapter(Platform):
                 and update.message.reply_to_message.from_user
                 and update.message.reply_to_message.from_user.id == context.bot.id
             ):
-                plain_text2 = f"/@{context.bot.username} " + plain_text
-                plain_text = plain_text2
+                # Keep slash commands untouched when replying to bot messages,
+                # otherwise wake-prefix stripping can break command matching.
+                if not plain_text.lstrip().startswith("/"):
+                    plain_text = f"/@{context.bot.username} {plain_text}"
 
             # 群聊场景命令特殊处理
             if plain_text.startswith("/"):
@@ -434,7 +436,15 @@ class TelegramPlatformAdapter(Platform):
                 return None
 
         elif update.message.voice:
-            file = await update.message.voice.get_file()
+            file = await self._safe_get_telegram_file(
+                update.message.voice.get_file,
+                "voice",
+            )
+            if file is None:
+                fallback_text = "[Voice: File is too big]"
+                message.message_str = fallback_text
+                message.message.append(Comp.Plain(fallback_text))
+                return message
 
             file_basename = os.path.basename(cast(str, file.file_path))
             temp_dir = get_astrbot_temp_path()
@@ -452,8 +462,13 @@ class TelegramPlatformAdapter(Platform):
 
         elif update.message.photo:
             photo = update.message.photo[-1]  # get the largest photo
-            file = await photo.get_file()
-            message.message.append(Comp.Image(file=file.file_path, url=file.file_path))
+            file = await self._safe_get_telegram_file(photo.get_file, "photo")
+            if file is not None:
+                message.message.append(
+                    Comp.Image(file=file.file_path, url=file.file_path)
+                )
+            else:
+                message.message.append(Comp.Plain("[Image: File is too big]"))
             if update.message.caption:
                 message.message_str = update.message.caption
                 message.message.append(Comp.Plain(message.message_str))
@@ -467,16 +482,32 @@ class TelegramPlatformAdapter(Platform):
 
         elif update.message.sticker:
             # 将sticker当作图片处理
-            file = await update.message.sticker.get_file()
-            message.message.append(Comp.Image(file=file.file_path, url=file.file_path))
+            file = await self._safe_get_telegram_file(
+                update.message.sticker.get_file,
+                "sticker",
+            )
+            if file is not None:
+                message.message.append(
+                    Comp.Image(file=file.file_path, url=file.file_path)
+                )
+            else:
+                message.message.append(Comp.Plain("[Sticker: File is too big]"))
             if update.message.sticker.emoji:
                 sticker_text = f"Sticker: {update.message.sticker.emoji}"
                 message.message_str = sticker_text
                 message.message.append(Comp.Plain(sticker_text))
 
         elif update.message.document:
-            file = await update.message.document.get_file()
             file_name = update.message.document.file_name or uuid.uuid4().hex
+            file = await self._safe_get_telegram_file(
+                update.message.document.get_file,
+                "document",
+            )
+            if file is None:
+                fallback_text = f"[Document: {file_name} (File is too big)]"
+                message.message_str = fallback_text
+                message.message.append(Comp.Plain(fallback_text))
+                return message
             file_path = file.file_path
             if file_path is None:
                 logger.warning(
@@ -488,8 +519,16 @@ class TelegramPlatformAdapter(Platform):
                 )
 
         elif update.message.video:
-            file = await update.message.video.get_file()
             file_name = update.message.video.file_name or uuid.uuid4().hex
+            file = await self._safe_get_telegram_file(
+                update.message.video.get_file,
+                "video",
+            )
+            if file is None:
+                fallback_text = f"[Video: {file_name} (File is too big)]"
+                message.message_str = fallback_text
+                message.message.append(Comp.Plain(fallback_text))
+                return message
             file_path = file.file_path
             if file_path is None:
                 logger.warning(
@@ -499,6 +538,21 @@ class TelegramPlatformAdapter(Platform):
                 message.message.append(Comp.Video(file=file_path, path=file.file_path))
 
         return message
+
+    async def _safe_get_telegram_file(self, get_file_coro, media_type: str):
+        """Get Telegram file metadata safely for oversized media payloads."""
+        try:
+            return await get_file_coro()
+        except BadRequest as exc:
+            err_msg = (getattr(exc, "message", None) or str(exc)).lower()
+            if "file is too big" in err_msg:
+                logger.warning(
+                    "Telegram %s is too large to fetch via get_file; "
+                    "falling back to text-only placeholder.",
+                    media_type,
+                )
+                return None
+            raise
 
     async def handle_media_group_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

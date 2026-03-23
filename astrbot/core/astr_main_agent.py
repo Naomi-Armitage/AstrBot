@@ -465,16 +465,35 @@ async def _request_img_caption(
             f"Cannot get image caption because provider `{provider_id}` is not a valid Provider, it is {type(prov)}.",
         )
 
-    img_cap_prompt = cfg.get(
-        "image_caption_prompt",
-        "Please describe the image.",
-    )
+    img_cap_prompt = cfg.get("image_caption_prompt")
+    if not isinstance(img_cap_prompt, str) or not img_cap_prompt.strip():
+        img_cap_prompt = "Please describe the image."
+
+    valid_image_urls = [
+        image_url.strip()
+        for image_url in (image_urls or [])
+        if isinstance(image_url, str) and image_url.strip()
+    ]
+    if not valid_image_urls:
+        logger.debug(
+            "Skipping image caption request because no valid image URL is available."
+        )
+        return ""
+
     logger.debug("Processing image caption with provider: %s", provider_id)
     llm_resp = await prov.text_chat(
         prompt=img_cap_prompt,
-        image_urls=image_urls,
+        image_urls=valid_image_urls,
     )
-    return llm_resp.completion_text
+    if llm_resp is None:
+        return ""
+
+    caption = getattr(llm_resp, "completion_text", "")
+    if caption is None:
+        return ""
+    if not isinstance(caption, str):
+        caption = str(caption)
+    return caption.strip()
 
 
 async def _ensure_img_caption(
@@ -625,19 +644,41 @@ async def _process_quote_message(
 
             if prov and isinstance(prov, Provider):
                 path = await image_seg.convert_to_file_path()
+                if not isinstance(path, str) or not path.strip():
+                    logger.warning(
+                        "Skipping quoted image caption because image path is invalid."
+                    )
+                    path = None
+
+                if path is None:
+                    quoted_content = "\n".join(content_parts)
+                    quoted_text = (
+                        f"<Quoted Message>\n{quoted_content}\n</Quoted Message>"
+                    )
+                    req.extra_user_content_parts.append(TextPart(text=quoted_text))
+                    return
+
                 compress_path = await _compress_image_for_provider(
                     path,
                     config.provider_settings if config else None,
                 )
-                if path and _is_generated_compressed_image_path(path, compress_path):
+                if _is_generated_compressed_image_path(path, compress_path):
                     event.track_temporary_local_file(compress_path)
                 llm_resp = await prov.text_chat(
                     prompt="Please describe the image content.",
                     image_urls=[compress_path],
                 )
-                if llm_resp.completion_text:
+                caption = getattr(llm_resp, "completion_text", "") if llm_resp else ""
+                if isinstance(caption, str):
+                    caption = caption.strip()
+                elif caption is None:
+                    caption = ""
+                else:
+                    caption = str(caption).strip()
+
+                if caption:
                     content_parts.append(
-                        f"[Image Caption in quoted message]: {llm_resp.completion_text}"
+                        f"[Image Caption in quoted message]: {caption}"
                     )
             else:
                 logger.warning("No provider found for image captioning in quote.")

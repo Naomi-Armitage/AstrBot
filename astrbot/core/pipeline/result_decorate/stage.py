@@ -123,6 +123,28 @@ class ResultDecorateStage(Stage):
                 result.append(seg)
         return result if result else [text]
 
+    def _should_attach_quote_reply(self, event: AstrMessageEvent) -> bool:
+        """Return whether the current platform can safely use Reply(id=...)."""
+        message_id = getattr(event.message_obj, "message_id", None)
+        if not message_id:
+            return False
+
+        if event.get_platform_name() != "telegram":
+            return True
+
+        if isinstance(message_id, int):
+            return message_id > 0
+
+        message_id_text = str(message_id).strip()
+        if message_id_text.isdigit():
+            return int(message_id_text) > 0
+
+        logger.debug(
+            "[Telegram] Skip quote decoration for non-numeric message_id=%r",
+            message_id,
+        )
+        return False
+
     async def process(
         self,
         event: AstrMessageEvent,
@@ -401,5 +423,5 @@ class ResultDecorateStage(Stage):
                         result.chain[1].text = "\n" + result.chain[1].text
 
                 # 引用回复
-                if self.reply_with_quote:
+                if self.reply_with_quote and self._should_attach_quote_reply(event):
                     result.chain.insert(0, Reply(id=event.message_obj.message_id))

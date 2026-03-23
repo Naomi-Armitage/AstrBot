@@ -80,6 +80,18 @@ class TelegramPlatformEvent(AstrMessageEvent):
         super().__init__(message_str, message_obj, platform_meta, session_id)
         self.client = client
 
+    @staticmethod
+    def _parse_telegram_message_id(message_id: str | int | None) -> int | None:
+        if message_id is None:
+            return None
+        if isinstance(message_id, int):
+            return message_id if message_id > 0 else None
+        message_id_text = str(message_id).strip()
+        if not message_id_text or not message_id_text.isdigit():
+            return None
+        parsed_message_id = int(message_id_text)
+        return parsed_message_id if parsed_message_id > 0 else None
+
     @classmethod
     def _split_message(cls, text: str) -> list[str]:
         if len(text) <= cls.MAX_MESSAGE_LENGTH:
@@ -251,12 +263,18 @@ class TelegramPlatformEvent(AstrMessageEvent):
         image_path = None
 
         has_reply = False
-        reply_message_id = None
+        reply_message_id: int | None = None
         at_user_id = None
         for i in message.chain:
             if isinstance(i, Reply):
-                has_reply = True
-                reply_message_id = i.id
+                parsed_reply_message_id = cls._parse_telegram_message_id(i.id)
+                if parsed_reply_message_id is None:
+                    logger.warning(
+                        f"[Telegram] Skip invalid reply_to_message_id: {i.id!r}"
+                    )
+                else:
+                    has_reply = True
+                    reply_message_id = parsed_reply_message_id
             if isinstance(i, At):
                 at_user_id = i.name
 
@@ -274,8 +292,8 @@ class TelegramPlatformEvent(AstrMessageEvent):
             payload = {
                 "chat_id": user_name,
             }
-            if has_reply:
-                payload["reply_to_message_id"] = str(reply_message_id)
+            if has_reply and reply_message_id is not None:
+                payload["reply_to_message_id"] = reply_message_id
             if message_thread_id:
                 payload["message_thread_id"] = message_thread_id
 
@@ -351,7 +369,13 @@ class TelegramPlatformEvent(AstrMessageEvent):
             else:
                 chat_id = self.get_sender_id()
 
-            message_id = int(self.message_obj.message_id)
+            message_id = self._parse_telegram_message_id(self.message_obj.message_id)
+            if message_id is None:
+                logger.warning(
+                    "[Telegram] Skip reaction because message_id is invalid: "
+                    f"{self.message_obj.message_id!r}"
+                )
+                return
 
             # 组装 reaction 参数（必须是 ReactionType 的列表）
             if not emoji:  # 清空本 bot 的反应
