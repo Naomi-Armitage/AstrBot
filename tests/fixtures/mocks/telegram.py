@@ -26,6 +26,7 @@ def create_mock_telegram_modules():
     mock_telegram.constants.ChatAction.UPLOAD_VOICE = "upload_voice"
     mock_telegram.constants.ChatAction.UPLOAD_DOCUMENT = "upload_document"
     mock_telegram.constants.ChatAction.UPLOAD_PHOTO = "upload_photo"
+    mock_telegram.constants.ChatAction.UPLOAD_VIDEO = "upload_video"
     mock_telegram.error = MagicMock()
     mock_telegram.error.BadRequest = Exception
     mock_telegram.ReactionTypeCustomEmoji = MagicMock
@@ -103,8 +104,10 @@ class MockTelegramBuilder:
         bot.base_url = "https://api.telegram.org/bottest_token_123/"
         bot.send_message = AsyncMock()
         bot.send_photo = AsyncMock()
+        bot.send_sticker = AsyncMock()
         bot.send_document = AsyncMock()
         bot.send_voice = AsyncMock()
+        bot.send_video = AsyncMock()
         bot.send_chat_action = AsyncMock()
         bot.delete_my_commands = AsyncMock()
         bot.set_my_commands = AsyncMock()

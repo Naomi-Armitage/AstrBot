@@ -1,8 +1,11 @@
 import asyncio
 import re
+import uuid
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 from aiocqhttp import CQHttp, Event
+from PIL import Image as PILImage
 
 from astrbot.api.event import AstrMessageEvent, MessageChain
 from astrbot.api.message_components import (
@@ -17,6 +20,8 @@ from astrbot.api.message_components import (
     Video,
 )
 from astrbot.api.platform import Group, MessageMember
+from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+from astrbot.core.utils.io import file_to_base64
 
 
 class AiocqhttpMessageEvent(AstrMessageEvent):
@@ -32,9 +37,40 @@ class AiocqhttpMessageEvent(AstrMessageEvent):
         self.bot = bot
 
     @staticmethod
+    def _is_webp_image(path: str) -> bool:
+        if Path(path).suffix.lower() == ".webp":
+            return True
+        try:
+            with open(path, "rb") as file:
+                header = file.read(12)
+        except OSError:
+            return False
+        return len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP"
+
+    @staticmethod
+    def _convert_webp_to_png(path: str) -> str:
+        output_path = (
+            Path(get_astrbot_temp_path()) / f"aiocqhttp_{uuid.uuid4().hex}.png"
+        )
+        with PILImage.open(path) as image:
+            image.save(output_path, format="PNG")
+        return str(output_path)
+
+    @staticmethod
     async def _from_segment_to_dict(segment: BaseMessageComponent) -> dict:
         """修复部分字段"""
-        if isinstance(segment, Image | Record):
+        if isinstance(segment, Image):
+            image_path = await segment.convert_to_file_path()
+            if AiocqhttpMessageEvent._is_webp_image(image_path):
+                image_path = AiocqhttpMessageEvent._convert_webp_to_png(image_path)
+            bs64 = file_to_base64(image_path).removeprefix("base64://")
+            return {
+                "type": segment.type.lower(),
+                "data": {
+                    "file": f"base64://{bs64}",
+                },
+            }
+        if isinstance(segment, Record):
             # For Image and Record segments, we convert them to base64
             bs64 = await segment.convert_to_base64()
             return {

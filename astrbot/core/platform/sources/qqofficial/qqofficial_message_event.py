@@ -3,6 +3,7 @@ import base64
 import os
 import random
 import uuid
+from pathlib import Path
 from typing import cast
 
 import aiofiles
@@ -15,13 +16,14 @@ from botpy import Client
 from botpy.http import Route
 from botpy.types import message
 from botpy.types.message import MarkdownPayload, Media
+from PIL import Image as PILImage
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, MessageChain
 from astrbot.api.message_components import File, Image, Plain, Record, Video
 from astrbot.api.platform import AstrBotMessage, PlatformMetadata
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
-from astrbot.core.utils.io import download_image_by_url, file_to_base64
+from astrbot.core.utils.io import file_to_base64
 from astrbot.core.utils.tencent_record_helper import wav_to_tencent_silk
 
 
@@ -64,6 +66,26 @@ class QQOfficialMessageEvent(AstrMessageEvent):
         super().__init__(message_str, message_obj, platform_meta, session_id)
         self.bot = bot
         self.send_buffer = None
+
+    @staticmethod
+    def _is_webp_image(path: str) -> bool:
+        if Path(path).suffix.lower() == ".webp":
+            return True
+        try:
+            with open(path, "rb") as file:
+                header = file.read(12)
+        except OSError:
+            return False
+        return len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP"
+
+    @staticmethod
+    def _convert_webp_to_png(path: str) -> str:
+        output_path = (
+            Path(get_astrbot_temp_path()) / f"qqofficial_{uuid.uuid4().hex}.png"
+        )
+        with PILImage.open(path) as image:
+            image.save(output_path, format="PNG")
+        return str(output_path)
 
     async def send(self, message: MessageChain) -> None:
         self.send_buffer = message
@@ -587,19 +609,12 @@ class QQOfficialMessageEvent(AstrMessageEvent):
             if isinstance(i, Plain):
                 plain_text += i.text
             elif isinstance(i, Image) and not image_base64:
-                if i.file and i.file.startswith("file:///"):
-                    image_base64 = file_to_base64(i.file[8:])
-                    image_file_path = i.file[8:]
-                elif i.file and i.file.startswith("http"):
-                    image_file_path = await download_image_by_url(i.file)
-                    image_base64 = file_to_base64(image_file_path)
-                elif i.file and i.file.startswith("base64://"):
-                    image_base64 = i.file
-                elif i.file:
-                    image_base64 = file_to_base64(i.file)
-                else:
-                    raise ValueError("Unsupported image file format")
-                image_base64 = image_base64.removeprefix("base64://")
+                image_file_path = await i.convert_to_file_path()
+                if QQOfficialMessageEvent._is_webp_image(image_file_path):
+                    image_file_path = QQOfficialMessageEvent._convert_webp_to_png(
+                        image_file_path
+                    )
+                image_base64 = file_to_base64(image_file_path).removeprefix("base64://")
             elif isinstance(i, Record):
                 if i.file:
                     record_wav_path = await i.convert_to_file_path()  # wav 路径

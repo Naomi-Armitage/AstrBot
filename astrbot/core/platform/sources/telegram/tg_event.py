@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, cast
 
 import telegramify_markdown
@@ -231,6 +232,92 @@ class TelegramPlatformEvent(AstrMessageEvent):
                     **cast(Any, payload),
                 )
 
+    @staticmethod
+    def _is_webp_image(path: str) -> bool:
+        if Path(path).suffix.lower() == ".webp":
+            return True
+        try:
+            with open(path, "rb") as file:
+                header = file.read(12)
+        except OSError:
+            return False
+        return len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP"
+
+    @classmethod
+    async def _send_image_with_fallback(
+        cls,
+        client: ExtBot,
+        image_path: str,
+        payload: dict[str, Any],
+        *,
+        user_name: str = "",
+        message_thread_id: str | None = None,
+        use_media_action: bool = False,
+    ) -> None:
+        async def _send_once(
+            upload_action: ChatAction | str,
+            send_coro,
+            **media_payload: Any,
+        ) -> None:
+            if use_media_action:
+                await cls._send_media_with_action(
+                    client,
+                    upload_action,
+                    send_coro,
+                    user_name=user_name,
+                    message_thread_id=message_thread_id,
+                    **cast(Any, payload),
+                    **media_payload,
+                )
+            else:
+                await send_coro(**media_payload, **cast(Any, payload))
+
+        if not cls._is_webp_image(image_path):
+            await _send_once(
+                ChatAction.UPLOAD_PHOTO,
+                client.send_photo,
+                photo=image_path,
+            )
+            return
+
+        document_name = f"{Path(image_path).stem}.webp"
+        send_attempts = (
+            (
+                "sticker",
+                ChatAction.UPLOAD_DOCUMENT,
+                client.send_sticker,
+                {"sticker": image_path},
+            ),
+            (
+                "document",
+                ChatAction.UPLOAD_DOCUMENT,
+                client.send_document,
+                {"document": image_path, "filename": document_name},
+            ),
+            (
+                "photo",
+                ChatAction.UPLOAD_PHOTO,
+                client.send_photo,
+                {"photo": image_path},
+            ),
+        )
+
+        last_error: Exception | None = None
+        for send_type, upload_action, send_coro, media_payload in send_attempts:
+            try:
+                await _send_once(upload_action, send_coro, **media_payload)
+                return
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                logger.warning(
+                    "[Telegram] Failed to send WEBP image via %s: %s",
+                    send_type,
+                    exc,
+                )
+
+        if last_error is not None:
+            raise last_error
+
     async def _ensure_typing(
         self,
         user_name: str,
@@ -260,8 +347,6 @@ class TelegramPlatformEvent(AstrMessageEvent):
         message: MessageChain,
         user_name: str,
     ) -> None:
-        image_path = None
-
         has_reply = False
         reply_message_id: int | None = None
         at_user_id = None
@@ -322,10 +407,14 @@ class TelegramPlatformEvent(AstrMessageEvent):
                 if _is_gif(image_path):
                     send_coro = client.send_animation
                     media_kwarg = {"animation": image_path}
+                    await send_coro(**media_kwarg, **cast(Any, payload))
                 else:
-                    send_coro = client.send_photo
-                    media_kwarg = {"photo": image_path}
-                await send_coro(**media_kwarg, **cast(Any, payload))
+                    await cls._send_image_with_fallback(
+                        client,
+                        image_path,
+                        payload,
+                        use_media_action=False,
+                    )
             elif isinstance(i, File):
                 path = await i.get_file()
                 name = i.name or os.path.basename(path)
@@ -450,18 +539,23 @@ class TelegramPlatformEvent(AstrMessageEvent):
                     action = ChatAction.UPLOAD_VIDEO
                     send_coro = self.client.send_animation
                     media_kwarg = {"animation": image_path}
+                    await self._send_media_with_action(
+                        self.client,
+                        action,
+                        send_coro,
+                        user_name=user_name,
+                        **media_kwarg,
+                        **cast(Any, payload),
+                    )
                 else:
-                    action = ChatAction.UPLOAD_PHOTO
-                    send_coro = self.client.send_photo
-                    media_kwarg = {"photo": image_path}
-                await self._send_media_with_action(
-                    self.client,
-                    action,
-                    send_coro,
-                    user_name=user_name,
-                    **media_kwarg,
-                    **cast(Any, payload),
-                )
+                    await self._send_image_with_fallback(
+                        self.client,
+                        image_path,
+                        payload,
+                        user_name=user_name,
+                        message_thread_id=message_thread_id,
+                        use_media_action=True,
+                    )
             elif isinstance(i, File):
                 path = await i.get_file()
                 name = i.name or os.path.basename(path)
