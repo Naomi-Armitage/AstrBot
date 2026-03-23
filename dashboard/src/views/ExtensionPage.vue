@@ -48,6 +48,7 @@ const {
   forceUpdateDialog,
   updateAllConfirmDialog,
   changelogDialog,
+  pluginUpdateDialog,
   getInitialListViewMode,
   isListView,
   pluginSearch,
@@ -109,6 +110,7 @@ const {
   uninstallExtension,
   handleUninstallConfirm,
   updateExtension,
+  confirmPluginUpdate,
   showUpdateAllConfirm,
   confirmUpdateAll,
   cancelUpdateAll,
@@ -406,6 +408,53 @@ const {
   />
 
   <!-- 卸载插件确认对话框（列表模式用） -->
+  <ReadmeDialog
+    v-model:show="pluginUpdateDialog.show"
+    :plugin-name="pluginUpdateDialog.pluginName"
+    :repo-url="pluginUpdateDialog.repoUrl || pluginUpdateDialog.defaultRepoUrl || null"
+    :title="tm('dialogs.updatePreview.title')"
+    :dialog-width="900"
+    mode="changelog"
+  >
+    <template #before-content>
+      <v-alert type="info" variant="tonal" class="mb-4">
+        {{ tm("dialogs.updatePreview.message") }}
+      </v-alert>
+
+      <v-text-field
+        v-model="pluginUpdateDialog.repoUrl"
+        :label="tm('dialogs.updatePreview.sourceLabel')"
+        variant="outlined"
+        prepend-inner-icon="mdi-source-branch"
+        class="mb-3"
+        placeholder="https://github.com/owner/repo/tree/codex/my-branch"
+      ></v-text-field>
+
+      <div class="text-caption text-medium-emphasis mb-3">
+        {{ tm("dialogs.updatePreview.sourceHint") }}
+      </div>
+
+      <v-checkbox
+        v-model="pluginUpdateDialog.persistUpdateSource"
+        :label="tm('dialogs.updatePreview.persistSource')"
+        color="primary"
+        density="comfortable"
+        hide-details
+        class="mb-4"
+      ></v-checkbox>
+    </template>
+
+    <template #footer>
+      <v-spacer></v-spacer>
+      <v-btn variant="text" @click="pluginUpdateDialog.show = false">
+        {{ tm("buttons.cancel") }}
+      </v-btn>
+      <v-btn color="primary" variant="flat" @click="confirmPluginUpdate">
+        {{ tm("dialogs.updatePreview.confirm") }}
+      </v-btn>
+    </template>
+  </ReadmeDialog>
+
   <UninstallConfirmDialog
     v-model="showUninstallDialog"
     @confirm="handleUninstallConfirm"

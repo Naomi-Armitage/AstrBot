@@ -32,6 +32,8 @@ const props = defineProps({
   show: { type: Boolean, default: false },
   pluginName: { type: String, default: "" },
   repoUrl: { type: String, default: null },
+  title: { type: String, default: "" },
+  dialogWidth: { type: [Number, String], default: 800 },
   mode: {
     type: String,
     default: "readme",
@@ -250,6 +252,9 @@ async function fetchContent() {
     let params;
     if (requiresPluginName.value) {
       params = { name: props.pluginName };
+      if (props.mode === "changelog" && props.repoUrl) {
+        params.repo_url = props.repoUrl;
+      }
     } else if (props.mode === "first-notice") {
       params = { locale: locale.value };
     }
@@ -365,10 +370,10 @@ const showActionArea = computed(() => {
 </script>
 
 <template>
-  <v-dialog v-model="_show" width="800">
+  <v-dialog v-model="_show" :width="dialogWidth">
     <v-card>
       <v-card-title class="d-flex justify-space-between align-center">
-        <span class="text-h2 pa-2">{{ modeConfig.title }}</span>
+        <span class="text-h2 pa-2">{{ title || modeConfig.title }}</span>
         <v-btn icon @click="_show = false" variant="text">
           <v-icon>mdi-close</v-icon>
         </v-btn>
@@ -392,6 +397,8 @@ const showActionArea = computed(() => {
             {{ modeConfig.refreshLabel }}
           </v-btn>
         </div>
+
+        <slot name="before-content"></slot>
 
         <div
           v-if="loading"
@@ -445,12 +452,16 @@ const showActionArea = computed(() => {
             {{ modeConfig.emptySubtitle }}
           </p>
         </div>
+
+        <slot name="after-content"></slot>
       </v-card-text>
       <v-card-actions>
-        <v-spacer></v-spacer>
-        <v-btn color="primary" variant="tonal" @click="_show = false">
-          {{ t("core.common.close") }}
-        </v-btn>
+        <slot name="footer">
+          <v-spacer></v-spacer>
+          <v-btn color="primary" variant="tonal" @click="_show = false">
+            {{ t("core.common.close") }}
+          </v-btn>
+        </slot>
       </v-card-actions>
     </v-card>
   </v-dialog>

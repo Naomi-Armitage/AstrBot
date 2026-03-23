@@ -381,6 +381,61 @@ class PluginRoute(Route):
             logger.warning(f"获取插件安装时间失败 {plugin.name}: {exc!s}")
             return None
 
+    def _build_remote_repo_file_urls(
+        self,
+        repo_url: str,
+        filenames: list[str],
+    ) -> list[str]:
+        try:
+            author, repo, branch = self.plugin_manager.updator.parse_github_url(
+                repo_url
+            )
+        except ValueError:
+            return []
+
+        branch_candidates = [branch] if branch else ["main", "master"]
+        urls: list[str] = []
+        for branch_name in branch_candidates:
+            for filename in filenames:
+                urls.append(
+                    f"https://raw.githubusercontent.com/{author}/{repo}/{branch_name}/{filename}"
+                )
+        return urls
+
+    async def _fetch_remote_repo_file_content(
+        self,
+        repo_url: str,
+        filenames: list[str],
+    ) -> str | None:
+        candidate_urls = self._build_remote_repo_file_urls(repo_url, filenames)
+        if not candidate_urls:
+            return None
+
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        connector = aiohttp.TCPConnector(ssl=ssl_context)
+        timeout = aiohttp.ClientTimeout(total=10)
+
+        async with aiohttp.ClientSession(
+            trust_env=True,
+            connector=connector,
+            timeout=timeout,
+        ) as session:
+            for candidate_url in candidate_urls:
+                try:
+                    async with session.get(candidate_url) as response:
+                        if response.status == 200:
+                            return await response.text()
+                        if response.status != 404:
+                            logger.warning(
+                                f"Failed to fetch remote file {candidate_url}: {response.status}"
+                            )
+                except Exception as exc:
+                    logger.warning(
+                        f"Failed to fetch remote file {candidate_url}: {exc!s}"
+                    )
+
+        return None
+
     async def get_plugins(self):
         _plugin_resp = []
         plugin_name = request.args.get("name")
@@ -390,9 +445,15 @@ class PluginRoute(Route):
             logo_url = None
             if plugin.logo_path:
                 logo_url = await self.get_plugin_logo_token(plugin.logo_path)
+            (
+                update_repo_url,
+                has_custom_update_source,
+            ) = await self.plugin_manager.get_plugin_update_source_info(plugin)
             _t = {
                 "name": plugin.name,
                 "repo": "" if plugin.repo is None else plugin.repo,
+                "update_repo_url": "" if update_repo_url is None else update_repo_url,
+                "has_custom_update_source": has_custom_update_source,
                 "author": plugin.author,
                 "desc": plugin.desc,
                 "version": plugin.version,
@@ -635,11 +696,20 @@ class PluginRoute(Route):
         post_data = await request.get_json()
         plugin_name = post_data["name"]
         proxy: str = post_data.get("proxy", None)
+        repo_url: str | None = post_data.get("repo_url")
+        persist_update_source = bool(post_data.get("persist_update_source", False))
+        clear_persisted_update_source = bool(
+            post_data.get("clear_persisted_update_source", False)
+        )
         try:
             logger.info(f"正在更新插件 {plugin_name}")
-            await self.plugin_manager.update_plugin(plugin_name, proxy)
-            # self.core_lifecycle.restart()
-            await self.plugin_manager.reload(plugin_name)
+            await self.plugin_manager.update_plugin_with_options(
+                plugin_name,
+                proxy,
+                repo_url=repo_url,
+                persist_update_source=persist_update_source,
+                clear_persisted_update_source=clear_persisted_update_source,
+            )
             logger.info(f"更新插件 {plugin_name} 成功。")
             return Response().ok(None, "更新成功。").__dict__
         except Exception as e:
@@ -668,7 +738,7 @@ class PluginRoute(Route):
             async with sem:
                 try:
                     logger.info(f"批量更新插件 {name}")
-                    await self.plugin_manager.update_plugin(name, proxy)
+                    await self.plugin_manager.update_plugin_with_options(name, proxy)
                     return {"name": name, "status": "ok", "message": "更新成功"}
                 except Exception as e:
                     logger.error(
@@ -797,6 +867,8 @@ class PluginRoute(Route):
         读取插件目录下的 CHANGELOG.md 文件内容。
         """
         plugin_name = request.args.get("name")
+        repo_url = request.args.get("repo_url")
+        changelog_names = ["CHANGELOG.md", "changelog.md", "CHANGELOG", "changelog"]
         logger.debug(f"正在获取插件 {plugin_name} 的更新日志")
 
         if not plugin_name:
@@ -804,6 +876,18 @@ class PluginRoute(Route):
             return Response().error("插件名称不能为空").__dict__
 
         # 查找插件
+        if repo_url:
+            remote_changelog = await self._fetch_remote_repo_file_content(
+                repo_url,
+                changelog_names,
+            )
+            if remote_changelog:
+                return (
+                    Response()
+                    .ok({"content": remote_changelog}, "鎴愬姛鑾峰彇鏇存柊鏃ュ織")
+                    .__dict__
+                )
+
         plugin_obj = None
         for plugin in self.plugin_manager.context.get_all_stars():
             if plugin.name == plugin_name:
@@ -834,7 +918,6 @@ class PluginRoute(Route):
             return Response().error(f"无法找到插件 {plugin_name} 的目录").__dict__
 
         # 尝试多种可能的文件名
-        changelog_names = ["CHANGELOG.md", "changelog.md", "CHANGELOG", "changelog"]
         for name in changelog_names:
             changelog_path = os.path.join(plugin_dir, name)
             if os.path.isfile(changelog_path):

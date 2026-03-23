@@ -200,6 +200,16 @@
       "title": "确认更新全部插件",
       "message": "确定要更新全部 {count} 个插件吗？此操作可能需要一些时间。",
       "confirm": "确认更新"
+    },
+    "updatePreview": {
+      "title": "确认更新",
+      "message": "先看更新日志，再确认这次更新要使用的仓库或分支。",
+      "sourceLabel": "更新来源仓库",
+      "sourceHint": "这里可以填 GitHub 仓库地址，或者像 https://github.com/owner/repo/tree/codex/my-branch 这样的分支地址。修改后可点击刷新重新加载更新日志预览。",
+      "persistSource": "记住这个更新来源，后续继续使用",
+      "confirm": "确认更新",
+      "invalidSource": "请输入有效的仓库地址",
+      "sourceRequired": "这个插件目前还没有可用的更新来源。"
     }
   },
   "messages": {

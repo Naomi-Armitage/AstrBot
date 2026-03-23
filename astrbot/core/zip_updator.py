@@ -196,7 +196,10 @@ class RepoZipUpdator:
             ValueError: 如果 URL 格式不正确
         """
         cleaned_url = url.rstrip("/")
-        pattern = r"^https://github\.com/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_-]+)(\.git)?(?:/tree/([a-zA-Z0-9_-]+))?$"
+        pattern = (
+            r"^https://github\.com/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_-]+)"
+            r"(\.git)?(?:/tree/([a-zA-Z0-9._\-/]+))?$"
+        )
         match = re.match(pattern, cleaned_url)
 
         if match:

@@ -174,6 +174,16 @@ export const useExtensionPage = () => {
     pluginName: "",
     repoUrl: null,
   });
+
+  const pluginUpdateDialog = reactive({
+    show: false,
+    pluginName: "",
+    repoUrl: "",
+    defaultRepoUrl: "",
+    hadCustomUpdateSource: false,
+    persistUpdateSource: false,
+    forceUpdate: false,
+  });
   
   // 新增变量支持列表视图
   // 从 localStorage 恢复显示模式，默认为 false（卡片视图）
@@ -629,7 +639,7 @@ export const useExtensionPage = () => {
   
   const updatableExtensions = computed(() => {
     const data = Array.isArray(extension_data?.data) ? extension_data.data : [];
-    return data.filter((ext) => ext.has_update);
+    return data.filter((ext) => ext.has_update || ext.has_custom_update_source);
   });
   
   // 方法
@@ -665,6 +675,32 @@ export const useExtensionPage = () => {
   const failedPluginItems = computed(() =>
     buildFailedPluginItems(failedPluginsDict.value),
   );
+
+  const normalizeUpdateSource = (value) => {
+    if (typeof value !== "string") return "";
+    return value.trim();
+  };
+
+  const getInstalledExtensionByName = (extensionName) => {
+    const data = Array.isArray(extension_data?.data) ? extension_data.data : [];
+    return data.find((extension) => extension.name === extensionName) || null;
+  };
+
+  const getEffectiveUpdateRepoUrl = (extension) =>
+    normalizeUpdateSource(extension?.update_repo_url) ||
+    normalizeUpdateSource(extension?.repo);
+
+  const openPluginUpdateDialog = (extension, forceUpdate = false) => {
+    if (!extension?.name) return;
+    const effectiveRepoUrl = getEffectiveUpdateRepoUrl(extension);
+    pluginUpdateDialog.pluginName = extension.name;
+    pluginUpdateDialog.defaultRepoUrl = normalizeUpdateSource(extension.repo);
+    pluginUpdateDialog.repoUrl = effectiveRepoUrl;
+    pluginUpdateDialog.hadCustomUpdateSource = !!extension.has_custom_update_source;
+    pluginUpdateDialog.persistUpdateSource = !!extension.has_custom_update_source;
+    pluginUpdateDialog.forceUpdate = !!forceUpdate;
+    pluginUpdateDialog.show = true;
+  };
   
   const getExtensions = async ({ withLoading = true } = {}) => {
     if (withLoading) {
@@ -848,56 +884,84 @@ export const useExtensionPage = () => {
   };
   
   const updateExtension = async (extension_name, forceUpdate = false) => {
-    // 查找插件信息
-    const data = Array.isArray(extension_data?.data) ? extension_data.data : [];
-    const ext = data.find((e) => e.name === extension_name);
-  
-    // 如果没有检测到更新且不是强制更新，则弹窗确认
-    if (!ext?.has_update && !forceUpdate) {
+    const ext = getInstalledExtensionByName(extension_name);
+    if (!ext) {
+      toast(tm("messages.operationFailed"), "error");
+      return;
+    }
+
+    const canPreviewUpdate = ext.has_update || ext.has_custom_update_source;
+    if (!canPreviewUpdate && !forceUpdate) {
       forceUpdateDialog.extensionName = extension_name;
       forceUpdateDialog.show = true;
       return;
     }
-  
+
+    openPluginUpdateDialog(ext, forceUpdate);
+  };
+
+  const confirmPluginUpdate = async () => {
+    const pluginName = pluginUpdateDialog.pluginName;
+    const repoUrl = normalizeUpdateSource(pluginUpdateDialog.repoUrl);
+    const fallbackRepoUrl = normalizeUpdateSource(pluginUpdateDialog.defaultRepoUrl);
+    const effectiveRepoUrl = repoUrl || fallbackRepoUrl;
+
+    if (!pluginName) {
+      toast(tm("messages.operationFailed"), "error");
+      return;
+    }
+
+    if (!effectiveRepoUrl) {
+      toast(tm("dialogs.updatePreview.sourceRequired"), "error");
+      return;
+    }
+
+    try {
+      new URL(effectiveRepoUrl);
+    } catch (error) {
+      toast(tm("dialogs.updatePreview.invalidSource"), "error");
+      return;
+    }
+
+    pluginUpdateDialog.show = false;
     loadingDialog.title = tm("status.loading");
+    loadingDialog.statusCode = 0;
+    loadingDialog.result = "";
     loadingDialog.show = true;
+
     try {
       const res = await axios.post("/api/plugin/update", {
-        name: extension_name,
+        name: pluginName,
         proxy: getSelectedGitHubProxy(),
+        repo_url: effectiveRepoUrl,
+        persist_update_source: pluginUpdateDialog.persistUpdateSource,
+        clear_persisted_update_source:
+          pluginUpdateDialog.hadCustomUpdateSource &&
+          !pluginUpdateDialog.persistUpdateSource,
       });
-  
+
       if (res.data.status === "error") {
         onLoadingDialogResult(2, res.data.message, -1);
         return;
       }
-  
+
       Object.assign(extension_data, res.data);
       onLoadingDialogResult(1, res.data.message);
-      setTimeout(async () => {
-        toast(tm("messages.refreshing"), "info", 2000);
-        try {
-          await getExtensions();
-          toast(tm("messages.refreshSuccess"), "success");
-  
-          // 更新完成后弹出更新日志
-          viewChangelog({
-            name: extension_name,
-            repo: ext?.repo || null,
-          });
-        } catch (error) {
-          const errorMsg =
-            error.response?.data?.message || error.message || String(error);
-          toast(`${tm("messages.refreshFailed")}: ${errorMsg}`, "error");
-        }
-      }, 1000);
+      toast(tm("messages.refreshing"), "info");
+
+      try {
+        await getExtensions();
+        toast(tm("messages.refreshSuccess"), "success");
+      } catch (error) {
+        const errorMsg =
+          error.response?.data?.message || error.message || String(error);
+        toast(`${tm("messages.refreshFailed")}: ${errorMsg}`, "error");
+      }
     } catch (err) {
       toast(err, "error");
     }
   };
-  
-  // 确认强制更新
-  // 显示更新全部插件确认对话框
+
   const showUpdateAllConfirm = () => {
     if (updatableExtensions.value.length === 0) return;
     updateAllConfirmDialog.show = true;
@@ -1062,14 +1126,14 @@ export const useExtensionPage = () => {
   
   const viewReadme = (plugin) => {
     readmeDialog.pluginName = plugin.name;
-    readmeDialog.repoUrl = plugin.repo;
+    readmeDialog.repoUrl = getEffectiveUpdateRepoUrl(plugin) || null;
     readmeDialog.show = true;
   };
   
   // 查看更新日志
   const viewChangelog = (plugin) => {
     changelogDialog.pluginName = plugin.name;
-    changelogDialog.repoUrl = plugin.repo;
+    changelogDialog.repoUrl = getEffectiveUpdateRepoUrl(plugin) || null;
     changelogDialog.show = true;
   };
   
@@ -1689,6 +1753,7 @@ export const useExtensionPage = () => {
     forceUpdateDialog,
     updateAllConfirmDialog,
     changelogDialog,
+    pluginUpdateDialog,
     getInitialListViewMode,
     isListView,
     pluginSearch,
@@ -1765,6 +1830,7 @@ export const useExtensionPage = () => {
     requestUninstallFailedPlugin,
     handleUninstallConfirm,
     updateExtension,
+    confirmPluginUpdate,
     showUpdateAllConfirm,
     confirmUpdateAll,
     cancelUpdateAll,

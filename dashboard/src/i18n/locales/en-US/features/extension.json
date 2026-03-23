@@ -197,6 +197,16 @@
       "title": "Confirm Update All Plugins",
       "message": "Are you sure you want to update all {count} plugins? This operation may take some time.",
       "confirm": "Confirm Update"
+    },
+    "updatePreview": {
+      "title": "Review Update",
+      "message": "Check the changelog first, then confirm which repository or branch should be used for this update.",
+      "sourceLabel": "Update source repository",
+      "sourceHint": "You can paste a GitHub repository URL or a branch URL like https://github.com/owner/repo/tree/codex/my-branch. Change it here, then use Refresh to reload the changelog preview.",
+      "persistSource": "Remember this update source for future updates",
+      "confirm": "Confirm Update",
+      "invalidSource": "Please enter a valid repository URL",
+      "sourceRequired": "This plugin does not have a usable update source yet."
     }
   },
   "messages": {

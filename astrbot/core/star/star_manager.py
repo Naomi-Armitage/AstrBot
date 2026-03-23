@@ -152,6 +152,8 @@ async def _install_requirements_with_precheck(
 
 
 class PluginManager:
+    _PLUGIN_UPDATE_SOURCE_OVERRIDES_KEY = "plugin_update_source_overrides"
+
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
         from .star_tools import StarTools
 
@@ -1504,15 +1506,106 @@ class PluginManager:
             is_reserved=plugin.reserved,
         )
 
+    @staticmethod
+    def _normalize_plugin_update_source(repo_url: str | None) -> str | None:
+        if not isinstance(repo_url, str):
+            return None
+        normalized = repo_url.strip()
+        return normalized or None
+
+    @staticmethod
+    def _plugin_update_source_key(plugin: StarMetadata) -> str:
+        return plugin.root_dir_name or plugin.name
+
+    async def _get_plugin_update_source_overrides(self) -> dict[str, str]:
+        overrides = await sp.global_get(self._PLUGIN_UPDATE_SOURCE_OVERRIDES_KEY, {})
+        if not isinstance(overrides, dict):
+            return {}
+
+        normalized_overrides: dict[str, str] = {}
+        for key, value in overrides.items():
+            if not isinstance(key, str):
+                continue
+            normalized_value = self._normalize_plugin_update_source(value)
+            if normalized_value:
+                normalized_overrides[key] = normalized_value
+        return normalized_overrides
+
+    async def get_plugin_update_source_info(
+        self,
+        plugin: StarMetadata,
+    ) -> tuple[str | None, bool]:
+        default_repo = self._normalize_plugin_update_source(plugin.repo)
+        overrides = await self._get_plugin_update_source_overrides()
+        override_repo = overrides.get(self._plugin_update_source_key(plugin))
+        return override_repo or default_repo, bool(override_repo)
+
+    async def set_plugin_update_source(
+        self,
+        plugin: StarMetadata,
+        repo_url: str | None,
+    ) -> tuple[str | None, bool]:
+        overrides = await self._get_plugin_update_source_overrides()
+        plugin_key = self._plugin_update_source_key(plugin)
+        default_repo = self._normalize_plugin_update_source(plugin.repo)
+        normalized_repo = self._normalize_plugin_update_source(repo_url)
+
+        if normalized_repo and normalized_repo != default_repo:
+            overrides[plugin_key] = normalized_repo
+            has_custom_source = True
+        else:
+            overrides.pop(plugin_key, None)
+            has_custom_source = False
+
+        await sp.global_put(self._PLUGIN_UPDATE_SOURCE_OVERRIDES_KEY, overrides)
+        return normalized_repo or default_repo, has_custom_source
+
     async def update_plugin(self, plugin_name: str, proxy="") -> None:
-        """升级一个插件"""
+        """??????"""
+        await self.update_plugin_with_options(plugin_name, proxy)
+
+    async def update_plugin_with_options(
+        self,
+        plugin_name: str,
+        proxy="",
+        *,
+        repo_url: str | None = None,
+        persist_update_source: bool = False,
+        clear_persisted_update_source: bool = False,
+    ) -> None:
         plugin = self.context.get_registered_star(plugin_name)
         if not plugin:
-            raise Exception("插件不存在。")
+            raise Exception("??????")
         if plugin.reserved:
-            raise Exception("该插件是 AstrBot 保留插件，无法更新。")
+            raise Exception("???? AstrBot ??????????")
 
-        await self.updator.update(plugin, proxy=proxy)
+        normalized_repo = self._normalize_plugin_update_source(repo_url)
+        if persist_update_source:
+            effective_repo_url, _ = await self.set_plugin_update_source(
+                plugin,
+                normalized_repo,
+            )
+        elif clear_persisted_update_source:
+            await self.set_plugin_update_source(plugin, None)
+            effective_repo_url = (
+                normalized_repo or self._normalize_plugin_update_source(plugin.repo)
+            )
+        elif normalized_repo:
+            effective_repo_url = normalized_repo
+        else:
+            effective_repo_url, _ = await self.get_plugin_update_source_info(plugin)
+
+        if (
+            effective_repo_url
+            and effective_repo_url != self._normalize_plugin_update_source(plugin.repo)
+        ):
+            await self.updator.update(
+                plugin,
+                proxy=proxy,
+                repo_url=effective_repo_url,
+            )
+        else:
+            await self.updator.update(plugin, proxy=proxy)
         if plugin.root_dir_name:
             plugin_dir_path = os.path.join(self.plugin_store_path, plugin.root_dir_name)
             await self._ensure_plugin_requirements(

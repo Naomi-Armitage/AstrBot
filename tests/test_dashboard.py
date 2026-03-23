@@ -402,6 +402,125 @@ async def test_plugins_when_installed_at_unresolved(
 
 
 @pytest.mark.asyncio
+async def test_plugin_update_route_persists_custom_update_source(
+    app: Quart,
+    authenticated_header: dict,
+    core_lifecycle_td: AstrBotCoreLifecycle,
+    monkeypatch,
+):
+    test_client = app.test_client()
+    plugin_store_path = core_lifecycle_td.plugin_manager.plugin_store_path
+    builder = MockPluginBuilder(plugin_store_path)
+
+    test_plugin_name = "test_custom_update_plugin"
+    test_repo_url = f"https://github.com/test/{test_plugin_name}"
+    custom_repo_url = f"{test_repo_url}/tree/codex/custom-update-branch"
+    seen_repo_urls = []
+    reload_calls = []
+
+    def capture_update(plugin, repo_url=None):
+        del plugin
+        seen_repo_urls.append(repo_url)
+
+    mock_install = create_mock_updater_install(
+        builder,
+        repo_to_plugin={test_repo_url: test_plugin_name},
+    )
+    mock_update = create_mock_updater_update(builder, update_callback=capture_update)
+
+    monkeypatch.setattr(
+        core_lifecycle_td.plugin_manager.updator,
+        "install",
+        mock_install,
+    )
+    monkeypatch.setattr(
+        core_lifecycle_td.plugin_manager.updator,
+        "update",
+        mock_update,
+    )
+
+    async def mock_reload(plugin_name: str):
+        reload_calls.append(plugin_name)
+        return True, ""
+
+    try:
+        install_response = await test_client.post(
+            "/api/plugin/install",
+            json={"url": test_repo_url},
+            headers=authenticated_header,
+        )
+        assert install_response.status_code == 200
+        install_data = await install_response.get_json()
+        assert install_data["status"] == "ok"
+
+        monkeypatch.setattr(core_lifecycle_td.plugin_manager, "reload", mock_reload)
+
+        update_response = await test_client.post(
+            "/api/plugin/update",
+            json={
+                "name": test_plugin_name,
+                "repo_url": custom_repo_url,
+                "persist_update_source": True,
+            },
+            headers=authenticated_header,
+        )
+        assert update_response.status_code == 200
+        update_data = await update_response.get_json()
+        assert update_data["status"] == "ok"
+        assert seen_repo_urls == [custom_repo_url]
+        assert reload_calls == [test_plugin_name]
+
+        plugin_response = await test_client.get(
+            f"/api/plugin/get?name={test_plugin_name}",
+            headers=authenticated_header,
+        )
+        assert plugin_response.status_code == 200
+        plugin_data = await plugin_response.get_json()
+        assert plugin_data["status"] == "ok"
+        assert len(plugin_data["data"]) == 1
+        plugin_payload = plugin_data["data"][0]
+        assert plugin_payload["update_repo_url"] == custom_repo_url
+        assert plugin_payload["has_custom_update_source"] is True
+
+        clear_response = await test_client.post(
+            "/api/plugin/update",
+            json={
+                "name": test_plugin_name,
+                "repo_url": custom_repo_url,
+                "persist_update_source": False,
+                "clear_persisted_update_source": True,
+            },
+            headers=authenticated_header,
+        )
+        assert clear_response.status_code == 200
+        clear_data = await clear_response.get_json()
+        assert clear_data["status"] == "ok"
+        assert seen_repo_urls == [custom_repo_url, custom_repo_url]
+        assert reload_calls == [test_plugin_name, test_plugin_name]
+
+        plugin_response = await test_client.get(
+            f"/api/plugin/get?name={test_plugin_name}",
+            headers=authenticated_header,
+        )
+        assert plugin_response.status_code == 200
+        plugin_data = await plugin_response.get_json()
+        assert plugin_data["status"] == "ok"
+        assert len(plugin_data["data"]) == 1
+        plugin_payload = plugin_data["data"][0]
+        assert plugin_payload["update_repo_url"] == test_repo_url
+        assert plugin_payload["has_custom_update_source"] is False
+    finally:
+        try:
+            await test_client.post(
+                "/api/plugin/uninstall",
+                json={"name": test_plugin_name},
+                headers=authenticated_header,
+            )
+        finally:
+            builder.cleanup(test_plugin_name)
+
+
+@pytest.mark.asyncio
 async def test_commands_api(app: Quart, authenticated_header: dict):
     """Tests the command management API endpoints."""
     test_client = app.test_client()

@@ -1,7 +1,6 @@
 import asyncio
 import os
 from pathlib import Path
-
 from typing import Any, cast
 
 import pytest
@@ -685,3 +684,67 @@ async def test_ensure_plugin_requirements_does_not_mask_install_error_when_clean
         )
 
     assert any("删除临时插件依赖文件失败" in log for log in warning_logs)
+
+
+@pytest.mark.asyncio
+async def test_update_plugin_with_options_persists_custom_update_source(
+    plugin_manager_pm: PluginManager,
+    monkeypatch,
+):
+    mock_star = MockStar()
+    cast(Any, plugin_manager_pm.context).stars.append(mock_star)
+    state = {}
+    events = []
+    custom_repo_url = (
+        "https://github.com/AstrBotDevs/astrbot_plugin_helloworld/"
+        "tree/codex/custom-update-branch"
+    )
+
+    async def mock_global_get(key, default=None):
+        return state.get(key, default)
+
+    async def mock_global_put(key, value):
+        state[key] = value
+
+    async def mock_update(plugin, proxy="", repo_url=None):
+        events.append(("update", plugin.name, proxy, repo_url))
+
+    monkeypatch.setattr("astrbot.core.star.star_manager.sp.global_get", mock_global_get)
+    monkeypatch.setattr("astrbot.core.star.star_manager.sp.global_put", mock_global_put)
+    monkeypatch.setattr(plugin_manager_pm.updator, "update", mock_update)
+    monkeypatch.setattr(plugin_manager_pm, "reload", _build_reload_mock(events))
+
+    await plugin_manager_pm.update_plugin_with_options(
+        TEST_PLUGIN_NAME,
+        "https://proxy.example",
+        repo_url=custom_repo_url,
+        persist_update_source=True,
+    )
+
+    assert (
+        "update",
+        TEST_PLUGIN_NAME,
+        "https://proxy.example",
+        custom_repo_url,
+    ) in events
+    assert ("reload", TEST_PLUGIN_DIR) in events
+    assert state[PluginManager._PLUGIN_UPDATE_SOURCE_OVERRIDES_KEY] == {
+        TEST_PLUGIN_DIR: custom_repo_url,
+    }
+    assert await plugin_manager_pm.get_plugin_update_source_info(mock_star) == (
+        custom_repo_url,
+        True,
+    )
+
+    await plugin_manager_pm.update_plugin_with_options(
+        TEST_PLUGIN_NAME,
+        "https://proxy.example",
+        repo_url=custom_repo_url,
+        clear_persisted_update_source=True,
+    )
+
+    assert state[PluginManager._PLUGIN_UPDATE_SOURCE_OVERRIDES_KEY] == {}
+    assert await plugin_manager_pm.get_plugin_update_source_info(mock_star) == (
+        TEST_PLUGIN_REPO,
+        False,
+    )
