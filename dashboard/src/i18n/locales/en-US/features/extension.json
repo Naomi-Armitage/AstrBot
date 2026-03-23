@@ -201,6 +201,12 @@
     "updatePreview": {
       "title": "Review Update",
       "message": "Check the changelog first, then confirm which repository or branch should be used for this update.",
+      "officialVersionTitle": "Official repository version",
+      "currentVersionLabel": "Current",
+      "targetVersionLabel": "Official latest",
+      "officialVersionDetected": "This update will use the official repository and upgrade from {currentVersion} to {targetVersion}.",
+      "officialVersionCurrent": "This update will use the official repository. No newer official version is currently detected.",
+      "officialVersionForceUpdate": "No newer official version is currently detected. This action will reinstall the latest code from the official repository.",
       "sourceLabel": "Update source repository",
       "sourceHint": "You can paste a GitHub repository URL or a branch URL like https://github.com/owner/repo/tree/codex/my-branch. Change it here, then use Refresh to reload the changelog preview.",
       "persistSource": "Remember this update source for future updates",

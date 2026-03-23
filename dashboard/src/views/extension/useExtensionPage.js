@@ -681,6 +681,9 @@ export const useExtensionPage = () => {
     return value.trim();
   };
 
+  const normalizeUpdateSourceCompareKey = (value) =>
+    normalizeUpdateSource(value).replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
+
   const getInstalledExtensionByName = (extensionName) => {
     const data = Array.isArray(extension_data?.data) ? extension_data.data : [];
     return data.find((extension) => extension.name === extensionName) || null;
@@ -701,6 +704,62 @@ export const useExtensionPage = () => {
     pluginUpdateDialog.forceUpdate = !!forceUpdate;
     pluginUpdateDialog.show = true;
   };
+
+  const isUsingOfficialUpdateSource = computed(() => {
+    const defaultRepoUrl = normalizeUpdateSourceCompareKey(
+      pluginUpdateDialog.defaultRepoUrl,
+    );
+    const selectedRepoUrl = normalizeUpdateSourceCompareKey(
+      pluginUpdateDialog.repoUrl || pluginUpdateDialog.defaultRepoUrl,
+    );
+    return !!defaultRepoUrl && defaultRepoUrl === selectedRepoUrl;
+  });
+
+  const pluginUpdateVersionInfo = computed(() => {
+    if (!isUsingOfficialUpdateSource.value) {
+      return null;
+    }
+
+    const extension = getInstalledExtensionByName(pluginUpdateDialog.pluginName);
+    if (!extension) {
+      return null;
+    }
+
+    const currentVersion = normalizeUpdateSource(extension.version);
+    const targetVersion = normalizeUpdateSource(extension.online_version);
+
+    if (!currentVersion && !targetVersion) {
+      return null;
+    }
+
+    if (targetVersion && currentVersion && targetVersion !== currentVersion) {
+      return {
+        type: "warning",
+        currentVersion,
+        targetVersion,
+        message: tm("dialogs.updatePreview.officialVersionDetected", {
+          currentVersion,
+          targetVersion,
+        }),
+      };
+    }
+
+    if (pluginUpdateDialog.forceUpdate) {
+      return {
+        type: "info",
+        currentVersion: currentVersion || targetVersion,
+        targetVersion,
+        message: tm("dialogs.updatePreview.officialVersionForceUpdate"),
+      };
+    }
+
+    return {
+      type: "info",
+      currentVersion: currentVersion || targetVersion,
+      targetVersion,
+      message: tm("dialogs.updatePreview.officialVersionCurrent"),
+    };
+  });
   
   const getExtensions = async ({ withLoading = true } = {}) => {
     if (withLoading) {
@@ -1754,6 +1813,7 @@ export const useExtensionPage = () => {
     updateAllConfirmDialog,
     changelogDialog,
     pluginUpdateDialog,
+    pluginUpdateVersionInfo,
     getInitialListViewMode,
     isListView,
     pluginSearch,

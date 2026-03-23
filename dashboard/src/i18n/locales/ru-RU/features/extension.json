@@ -200,6 +200,12 @@
         "updatePreview": {
             "title": "Проверка обновления",
             "message": "Сначала просмотрите changelog, затем подтвердите репозиторий или ветку, из которых нужно обновить плагин.",
+            "officialVersionTitle": "Версия из официального репозитория",
+            "currentVersionLabel": "Текущая",
+            "targetVersionLabel": "Последняя официальная",
+            "officialVersionDetected": "Обновление будет выполнено из официального репозитория: {currentVersion} → {targetVersion}.",
+            "officialVersionCurrent": "Будет использован официальный репозиторий. Более новой официальной версии сейчас не обнаружено.",
+            "officialVersionForceUpdate": "Более новой официальной версии сейчас не обнаружено. Это действие переустановит последний код из официального репозитория.",
             "sourceLabel": "Источник обновления",
             "sourceHint": "Можно указать URL GitHub-репозитория или ссылку на ветку вида https://github.com/owner/repo/tree/codex/my-branch. После изменения нажмите Refresh, чтобы заново загрузить changelog.",
             "persistSource": "Запомнить этот источник для следующих обновлений",

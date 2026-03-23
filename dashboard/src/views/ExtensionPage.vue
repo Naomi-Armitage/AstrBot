@@ -49,6 +49,7 @@ const {
   updateAllConfirmDialog,
   changelogDialog,
   pluginUpdateDialog,
+  pluginUpdateVersionInfo,
   getInitialListViewMode,
   isListView,
   pluginSearch,
@@ -419,6 +420,38 @@ const {
     <template #before-content>
       <v-alert type="info" variant="tonal" class="mb-4">
         {{ tm("dialogs.updatePreview.message") }}
+      </v-alert>
+
+      <v-alert
+        v-if="pluginUpdateVersionInfo"
+        :type="pluginUpdateVersionInfo.type"
+        variant="tonal"
+        class="mb-4"
+      >
+        <div class="text-subtitle-2 font-weight-medium mb-2">
+          {{ tm("dialogs.updatePreview.officialVersionTitle") }}
+        </div>
+        <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
+          <v-chip size="small" variant="outlined">
+            {{ tm("dialogs.updatePreview.currentVersionLabel") }}:
+            {{ pluginUpdateVersionInfo.currentVersion || tm("status.unknown") }}
+          </v-chip>
+          <v-icon v-if="pluginUpdateVersionInfo.targetVersion" size="18">
+            mdi-arrow-right
+          </v-icon>
+          <v-chip
+            v-if="pluginUpdateVersionInfo.targetVersion"
+            size="small"
+            color="warning"
+            variant="tonal"
+          >
+            {{ tm("dialogs.updatePreview.targetVersionLabel") }}:
+            {{ pluginUpdateVersionInfo.targetVersion }}
+          </v-chip>
+        </div>
+        <div class="text-body-2">
+          {{ pluginUpdateVersionInfo.message }}
+        </div>
       </v-alert>
 
       <v-text-field
