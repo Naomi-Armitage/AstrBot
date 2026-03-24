@@ -49,7 +49,8 @@ const {
   updateAllConfirmDialog,
   changelogDialog,
   pluginUpdateDialog,
-  pluginUpdateVersionInfo,
+  pluginUpdateCustomSourceInfo,
+  pluginUpdateOfficialVersionInfo,
   getInitialListViewMode,
   isListView,
   pluginSearch,
@@ -423,8 +424,31 @@ const {
       </v-alert>
 
       <v-alert
-        v-if="pluginUpdateVersionInfo"
-        :type="pluginUpdateVersionInfo.type"
+        v-if="pluginUpdateCustomSourceInfo"
+        type="info"
+        variant="tonal"
+        class="mb-4"
+      >
+        <div class="text-subtitle-2 font-weight-medium mb-2">
+          {{ tm("dialogs.updatePreview.customSourceTitle") }}
+        </div>
+        <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
+          <v-chip size="small" color="info" variant="tonal">
+            <v-icon start size="16">mdi-source-branch</v-icon>
+            {{
+              pluginUpdateCustomSourceInfo.sourceLabel ||
+              tm("card.status.customSourceShort")
+            }}
+          </v-chip>
+        </div>
+        <div class="text-body-2">
+          {{ pluginUpdateCustomSourceInfo.message }}
+        </div>
+      </v-alert>
+
+      <v-alert
+        v-if="pluginUpdateOfficialVersionInfo"
+        :type="pluginUpdateOfficialVersionInfo.type"
         variant="tonal"
         class="mb-4"
       >
@@ -434,23 +458,25 @@ const {
         <div class="d-flex align-center flex-wrap mb-2" style="gap: 8px">
           <v-chip size="small" variant="outlined">
             {{ tm("dialogs.updatePreview.currentVersionLabel") }}:
-            {{ pluginUpdateVersionInfo.currentVersion || tm("status.unknown") }}
+            {{
+              pluginUpdateOfficialVersionInfo.currentVersion || tm("status.unknown")
+            }}
           </v-chip>
-          <v-icon v-if="pluginUpdateVersionInfo.targetVersion" size="18">
+          <v-icon v-if="pluginUpdateOfficialVersionInfo.targetVersion" size="18">
             mdi-arrow-right
           </v-icon>
           <v-chip
-            v-if="pluginUpdateVersionInfo.targetVersion"
+            v-if="pluginUpdateOfficialVersionInfo.targetVersion"
             size="small"
             color="warning"
             variant="tonal"
           >
             {{ tm("dialogs.updatePreview.targetVersionLabel") }}:
-            {{ pluginUpdateVersionInfo.targetVersion }}
+            {{ pluginUpdateOfficialVersionInfo.targetVersion }}
           </v-chip>
         </div>
         <div class="text-body-2">
-          {{ pluginUpdateVersionInfo.message }}
+          {{ pluginUpdateOfficialVersionInfo.message }}
         </div>
       </v-alert>
 

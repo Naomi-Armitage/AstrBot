@@ -207,7 +207,7 @@ const viewChangelog = () => {
                   ></v-icon>
                 </template>
                 <span
-                  >{{ tm("card.status.hasUpdate") }}:
+                  >{{ tm("messages.hasOfficialUpdate") }}:
                   {{ extension.online_version }}</span
                 >
               </v-tooltip>
@@ -312,6 +312,37 @@ const viewChangelog = () => {
                   <v-icon icon="mdi-source-branch" start></v-icon>
                   {{ extension.version }}
                 </v-chip>
+                <v-tooltip
+                  v-if="extension?.has_custom_update_source"
+                  location="top"
+                >
+                  <template v-slot:activator="{ props: tooltipProps }">
+                    <v-chip
+                      v-bind="tooltipProps"
+                      color="info"
+                      variant="tonal"
+                      label
+                      size="small"
+                      style="cursor: pointer"
+                      @click="updateExtension"
+                    >
+                      <v-icon icon="mdi-source-branch" start></v-icon>
+                      {{
+                        extension.custom_update_source_label ||
+                        tm("card.status.customSourceShort")
+                      }}
+                    </v-chip>
+                  </template>
+                  <span>
+                    {{
+                      tm("card.status.customSourceActive", {
+                        source:
+                          extension.custom_update_source_label ||
+                          tm("card.status.customSourceShort"),
+                      })
+                    }}
+                  </span>
+                </v-tooltip>
                 <v-chip
                   v-if="extension?.has_update"
                   color="warning"
@@ -443,6 +474,8 @@ const viewChangelog = () => {
             <v-list-item-title>{{
               extension.has_update
                 ? tm("card.actions.updateTo") + " " + extension.online_version
+                : extension.has_custom_update_source
+                  ? tm("card.actions.updateFromCustomSource")
                 : tm("card.actions.reinstall")
             }}</v-list-item-title>
           </v-list-item>

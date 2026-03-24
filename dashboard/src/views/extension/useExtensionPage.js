@@ -18,6 +18,20 @@ import { ref, computed, onMounted, onUnmounted, reactive, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useDisplay } from "vuetify";
 
+const versionCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: "base",
+});
+
+const prereleaseVersionTags = new Set([
+  "alpha",
+  "beta",
+  "rc",
+  "dev",
+  "pre",
+  "preview",
+]);
+
 const useRandomPluginsDisplay = ({ activeTab, marketSearch, currentPage }) => {
   const showRandomPlugins = ref(true);
 
@@ -496,8 +510,10 @@ export const useExtensionPage = () => {
         }
 
         if (installedSortBy.value === "update_status") {
-          const leftHasUpdate = left.plugin?.has_update ? 1 : 0;
-          const rightHasUpdate = right.plugin?.has_update ? 1 : 0;
+          const leftHasUpdate =
+            left.plugin?.has_update || left.plugin?.has_custom_update_source ? 1 : 0;
+          const rightHasUpdate =
+            right.plugin?.has_update || right.plugin?.has_custom_update_source ? 1 : 0;
           const updateDiff =
             installedSortOrder.value === "desc"
               ? rightHasUpdate - leftHasUpdate
@@ -677,12 +693,160 @@ export const useExtensionPage = () => {
   );
 
   const normalizeUpdateSource = (value) => {
-    if (typeof value !== "string") return "";
-    return value.trim();
+    if (value == null) return "";
+    return String(value).trim();
   };
 
   const normalizeUpdateSourceCompareKey = (value) =>
-    normalizeUpdateSource(value).replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
+    normalizeUpdateSource(value)
+      .replace(/\/+$/, "")
+      .replace(/\.git$/i, "")
+      .toLowerCase();
+
+  const parseVersionParts = (value) => {
+    const normalizedVersion = normalizeUpdateSource(value).replace(/^v(?=\d)/i, "");
+    const matches = normalizedVersion.match(/\d+|[a-zA-Z]+/g);
+    if (!matches) {
+      return [];
+    }
+
+    return matches.map((token) => {
+      if (/^\d+$/.test(token)) {
+        return { type: "number", value: Number(token) };
+      }
+      return { type: "text", value: token.toLowerCase() };
+    });
+  };
+
+  const isPrereleaseVersionToken = (token) =>
+    token?.type === "text" && prereleaseVersionTags.has(token.value);
+
+  const compareRemainingVersionParts = (tokens) => {
+    if (!tokens.length) {
+      return 0;
+    }
+
+    const hasNonZeroNumber = tokens.some(
+      (token) => token.type === "number" && token.value > 0,
+    );
+    if (hasNonZeroNumber) {
+      return 1;
+    }
+
+    const hasNonPrereleaseText = tokens.some(
+      (token) => token.type === "text" && !isPrereleaseVersionToken(token),
+    );
+    if (hasNonPrereleaseText) {
+      return 1;
+    }
+
+    const hasPrereleaseText = tokens.some(isPrereleaseVersionToken);
+    if (hasPrereleaseText) {
+      return -1;
+    }
+
+    return 0;
+  };
+
+  const comparePluginVersions = (leftVersion, rightVersion) => {
+    const normalizedLeft = normalizeUpdateSource(leftVersion);
+    const normalizedRight = normalizeUpdateSource(rightVersion);
+
+    if (!normalizedLeft && !normalizedRight) {
+      return 0;
+    }
+    if (!normalizedLeft) {
+      return -1;
+    }
+    if (!normalizedRight) {
+      return 1;
+    }
+
+    if (
+      normalizeUpdateSourceCompareKey(normalizedLeft) ===
+      normalizeUpdateSourceCompareKey(normalizedRight)
+    ) {
+      return 0;
+    }
+
+    const leftParts = parseVersionParts(normalizedLeft);
+    const rightParts = parseVersionParts(normalizedRight);
+    if (!leftParts.length || !rightParts.length) {
+      return versionCollator.compare(normalizedLeft, normalizedRight);
+    }
+
+    const maxLength = Math.max(leftParts.length, rightParts.length);
+    for (let index = 0; index < maxLength; index += 1) {
+      const leftPart = leftParts[index];
+      const rightPart = rightParts[index];
+
+      if (!leftPart) {
+        return -compareRemainingVersionParts(rightParts.slice(index));
+      }
+      if (!rightPart) {
+        return compareRemainingVersionParts(leftParts.slice(index));
+      }
+
+      if (leftPart.type === rightPart.type) {
+        if (leftPart.type === "number") {
+          if (leftPart.value !== rightPart.value) {
+            return leftPart.value > rightPart.value ? 1 : -1;
+          }
+          continue;
+        }
+
+        const textCompare = versionCollator.compare(
+          leftPart.value,
+          rightPart.value,
+        );
+        if (textCompare !== 0) {
+          return textCompare > 0 ? 1 : -1;
+        }
+        continue;
+      }
+
+      if (isPrereleaseVersionToken(leftPart)) {
+        return -1;
+      }
+      if (isPrereleaseVersionToken(rightPart)) {
+        return 1;
+      }
+
+      return leftPart.type === "number" ? 1 : -1;
+    }
+
+    const fallbackCompare = versionCollator.compare(normalizedLeft, normalizedRight);
+    if (fallbackCompare === 0) {
+      return 0;
+    }
+    return fallbackCompare > 0 ? 1 : -1;
+  };
+
+  const extractGitHubUpdateSourceLabel = (value) => {
+    const normalizedValue = normalizeUpdateSource(value);
+    if (!normalizedValue) {
+      return "";
+    }
+
+    try {
+      const parsedUrl = new URL(normalizedValue);
+      if (parsedUrl.hostname !== "github.com") {
+        return parsedUrl.hostname;
+      }
+
+      const segments = parsedUrl.pathname.split("/").filter(Boolean);
+      if (segments.length >= 4 && segments[2] === "tree") {
+        return segments.slice(3).join("/");
+      }
+      if (segments.length >= 2) {
+        return `${segments[0]}/${segments[1]}`;
+      }
+    } catch (error) {
+      return normalizedValue;
+    }
+
+    return normalizedValue;
+  };
 
   const getInstalledExtensionByName = (extensionName) => {
     const data = Array.isArray(extension_data?.data) ? extension_data.data : [];
@@ -692,6 +856,19 @@ export const useExtensionPage = () => {
   const getEffectiveUpdateRepoUrl = (extension) =>
     normalizeUpdateSource(extension?.update_repo_url) ||
     normalizeUpdateSource(extension?.repo);
+
+  const getCustomUpdateSourceLabel = (extension) => {
+    if (!extension?.has_custom_update_source) {
+      return "";
+    }
+
+    const customSourceUrl = normalizeUpdateSource(extension?.update_repo_url);
+    if (!customSourceUrl) {
+      return tm("card.status.customSourceShort");
+    }
+
+    return extractGitHubUpdateSourceLabel(customSourceUrl);
+  };
 
   const openPluginUpdateDialog = (extension, forceUpdate = false) => {
     if (!extension?.name) return;
@@ -715,49 +892,100 @@ export const useExtensionPage = () => {
     return !!defaultRepoUrl && defaultRepoUrl === selectedRepoUrl;
   });
 
-  const pluginUpdateVersionInfo = computed(() => {
-    if (!isUsingOfficialUpdateSource.value) {
+  const pluginUpdateCustomSourceInfo = computed(() => {
+    if (isUsingOfficialUpdateSource.value) {
       return null;
     }
 
+    const selectedRepoUrl = normalizeUpdateSource(
+      pluginUpdateDialog.repoUrl || pluginUpdateDialog.defaultRepoUrl,
+    );
+    if (!selectedRepoUrl) {
+      return null;
+    }
+
+    const sourceLabel = extractGitHubUpdateSourceLabel(selectedRepoUrl);
+    return {
+      sourceLabel,
+      sourceUrl: selectedRepoUrl,
+      message: tm("dialogs.updatePreview.customSourceActive", {
+        source: sourceLabel || selectedRepoUrl,
+      }),
+    };
+  });
+
+  const pluginUpdateOfficialVersionInfo = computed(() => {
     const extension = getInstalledExtensionByName(pluginUpdateDialog.pluginName);
     if (!extension) {
       return null;
     }
 
     const currentVersion = normalizeUpdateSource(extension.version);
-    const targetVersion = normalizeUpdateSource(extension.online_version);
+    const officialVersion = normalizeUpdateSource(
+      extension.official_online_version || extension.online_version,
+    );
 
-    if (!currentVersion && !targetVersion) {
+    if (!currentVersion && !officialVersion) {
       return null;
     }
 
-    if (targetVersion && currentVersion && targetVersion !== currentVersion) {
+    const versionCompare = comparePluginVersions(officialVersion, currentVersion);
+    if (officialVersion && versionCompare > 0) {
       return {
         type: "warning",
         currentVersion,
-        targetVersion,
-        message: tm("dialogs.updatePreview.officialVersionDetected", {
+        targetVersion: officialVersion,
+        message: isUsingOfficialUpdateSource.value
+          ? tm("dialogs.updatePreview.officialVersionDetected", {
+              currentVersion,
+              targetVersion: officialVersion,
+            })
+          : tm("dialogs.updatePreview.officialVersionAvailableElsewhere", {
+              currentVersion,
+              targetVersion: officialVersion,
+            }),
+      };
+    }
+
+    if (!officialVersion) {
+      return {
+        type: "info",
+        currentVersion,
+        targetVersion: "",
+        message: tm("dialogs.updatePreview.officialVersionUnknown"),
+      };
+    }
+
+    if (versionCompare < 0) {
+      return {
+        type: "info",
+        currentVersion,
+        targetVersion: officialVersion,
+        message: tm("dialogs.updatePreview.officialVersionBehindCurrent", {
           currentVersion,
-          targetVersion,
+          targetVersion: officialVersion,
         }),
       };
     }
 
-    if (pluginUpdateDialog.forceUpdate) {
+    if (!isUsingOfficialUpdateSource.value) {
       return {
         type: "info",
-        currentVersion: currentVersion || targetVersion,
-        targetVersion,
-        message: tm("dialogs.updatePreview.officialVersionForceUpdate"),
+        currentVersion: currentVersion || officialVersion,
+        targetVersion: officialVersion,
+        message: tm("dialogs.updatePreview.officialVersionCurrentElsewhere", {
+          targetVersion: officialVersion,
+        }),
       };
     }
 
     return {
       type: "info",
-      currentVersion: currentVersion || targetVersion,
-      targetVersion,
-      message: tm("dialogs.updatePreview.officialVersionCurrent"),
+      currentVersion: currentVersion || officialVersion,
+      targetVersion: officialVersion,
+      message: pluginUpdateDialog.forceUpdate
+        ? tm("dialogs.updatePreview.officialVersionForceUpdate")
+        : tm("dialogs.updatePreview.officialVersionCurrent"),
     };
   });
   
@@ -900,13 +1128,18 @@ export const useExtensionPage = () => {
       const matchedPlugin = onlinePlugin || onlinePluginByName;
   
       if (matchedPlugin) {
+        extension.official_online_version = matchedPlugin.version;
         extension.online_version = matchedPlugin.version;
         extension.has_update =
-          extension.version !== matchedPlugin.version &&
-          matchedPlugin.version !== tm("status.unknown");
+          matchedPlugin.version !== tm("status.unknown") &&
+          comparePluginVersions(matchedPlugin.version, extension.version) > 0;
       } else {
+        extension.official_online_version = "";
+        extension.online_version = "";
         extension.has_update = false;
       }
+
+      extension.custom_update_source_label = getCustomUpdateSourceLabel(extension);
     });
   };
   
@@ -1813,7 +2046,8 @@ export const useExtensionPage = () => {
     updateAllConfirmDialog,
     changelogDialog,
     pluginUpdateDialog,
-    pluginUpdateVersionInfo,
+    pluginUpdateCustomSourceInfo,
+    pluginUpdateOfficialVersionInfo,
     getInitialListViewMode,
     isListView,
     pluginSearch,

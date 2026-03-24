@@ -572,8 +572,38 @@ const pinnedPlugins = computed(() => {
                     </template>
 
                     <template v-slot:item.version="{ item }">
-                      <div class="d-flex align-center">
+                      <div class="d-flex align-center flex-wrap" style="gap: 4px">
                         <span class="text-body-2">{{ item.version }}</span>
+                        <v-tooltip
+                          v-if="item.has_custom_update_source"
+                          location="top"
+                        >
+                          <template v-slot:activator="{ props: tooltipProps }">
+                            <v-chip
+                              v-bind="tooltipProps"
+                              size="x-small"
+                              color="info"
+                              variant="tonal"
+                              style="cursor: pointer"
+                              @click.stop="updateExtension(item.name)"
+                            >
+                              <v-icon start size="14">mdi-source-branch</v-icon>
+                              {{
+                                item.custom_update_source_label ||
+                                tm("card.status.customSourceShort")
+                              }}
+                            </v-chip>
+                          </template>
+                          <span>
+                            {{
+                              tm("card.status.customSourceActive", {
+                                source:
+                                  item.custom_update_source_label ||
+                                  tm("card.status.customSourceShort"),
+                              })
+                            }}
+                          </span>
+                        </v-tooltip>
                         <v-tooltip v-if="item.has_update" location="top">
                           <template v-slot:activator="{ props: tooltipProps }">
                             <v-icon
@@ -587,7 +617,7 @@ const pinnedPlugins = computed(() => {
                             >
                           </template>
                           <span
-                            >{{ tm("messages.hasUpdate") }}
+                            >{{ tm("messages.hasOfficialUpdate") }}
                             {{ item.online_version }}</span
                           >
                         </v-tooltip>
