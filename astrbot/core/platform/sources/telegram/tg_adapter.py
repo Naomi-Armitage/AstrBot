@@ -1,4 +1,5 @@
 import asyncio
+import mimetypes
 import os
 import re
 import sys
@@ -319,6 +320,45 @@ class TelegramPlatformAdapter(Platform):
         if abm:
             await self.handle_msg(abm)
 
+    @staticmethod
+    def _append_caption_components(
+        message: AstrBotMessage,
+        caption: str | None,
+        caption_entities,
+    ) -> None:
+        if not caption:
+            return
+
+        message.message_str = caption
+        message.message.append(Comp.Plain(caption))
+        if not caption_entities:
+            return
+
+        for entity in caption_entities:
+            if entity.type != "mention":
+                continue
+            name = caption[entity.offset + 1 : entity.offset + entity.length]
+            message.message.append(Comp.At(qq=name, name=name))
+
+    @staticmethod
+    def _is_image_document(
+        document,
+        file_name: str,
+        file_path: str | None,
+    ) -> bool:
+        mime_type = str(getattr(document, "mime_type", "") or "").strip().lower()
+        if mime_type.startswith("image/"):
+            return True
+
+        for candidate in (file_name, file_path):
+            if not candidate:
+                continue
+            guessed_type, _ = mimetypes.guess_type(candidate)
+            if guessed_type and guessed_type.startswith("image/"):
+                return True
+
+        return False
+
     async def convert_message(
         self,
         update: Update,
@@ -469,16 +509,11 @@ class TelegramPlatformAdapter(Platform):
                 )
             else:
                 message.message.append(Comp.Plain("[Image: File is too big]"))
-            if update.message.caption:
-                message.message_str = update.message.caption
-                message.message.append(Comp.Plain(message.message_str))
-            if update.message.caption_entities:
-                for entity in update.message.caption_entities:
-                    if entity.type == "mention":
-                        name = message.message_str[
-                            entity.offset + 1 : entity.offset + entity.length
-                        ]
-                        message.message.append(Comp.At(qq=name, name=name))
+            self._append_caption_components(
+                message,
+                update.message.caption,
+                update.message.caption_entities,
+            )
 
         elif update.message.sticker:
             # 将sticker当作图片处理
@@ -514,9 +549,21 @@ class TelegramPlatformAdapter(Platform):
                     f"Telegram document file_path is None, cannot save the file {file_name}.",
                 )
             else:
-                message.message.append(
-                    Comp.File(file=file_path, name=file_name, url=file_path)
+                component = (
+                    Comp.Image(file=file_path, url=file_path)
+                    if self._is_image_document(
+                        update.message.document,
+                        file_name,
+                        file_path,
+                    )
+                    else Comp.File(file=file_path, name=file_name, url=file_path)
                 )
+                message.message.append(component)
+            self._append_caption_components(
+                message,
+                update.message.caption,
+                update.message.caption_entities,
+            )
 
         elif update.message.video:
             file_name = update.message.video.file_name or uuid.uuid4().hex

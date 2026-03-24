@@ -32,6 +32,33 @@ def _build_update_with_video(video) -> SimpleNamespace:
     return SimpleNamespace(message=message)
 
 
+def _build_update_with_document(
+    document,
+    *,
+    caption: str | None = None,
+    caption_entities=None,
+) -> SimpleNamespace:
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=12345, type=ChatType.PRIVATE),
+        message_id=1001,
+        from_user=SimpleNamespace(id=42, username="tester"),
+        reply_to_message=None,
+        is_topic_message=False,
+        message_thread_id=None,
+        media_group_id=None,
+        text=None,
+        entities=None,
+        voice=None,
+        photo=None,
+        sticker=None,
+        document=document,
+        video=None,
+        caption=caption,
+        caption_entities=caption_entities,
+    )
+    return SimpleNamespace(message=message)
+
+
 def _build_text_message(
     text: str,
     *,
@@ -111,6 +138,93 @@ async def test_convert_message_video_non_size_bad_request_is_raised():
 
     with pytest.raises(BadRequest):
         await adapter.convert_message(update, context)
+
+
+@pytest.mark.asyncio
+async def test_convert_message_document_image_uses_image_component_and_caption():
+    adapter = TelegramPlatformAdapter(
+        platform_config={"telegram_token": "123456:ABCDEF", "id": "telegram"},
+        platform_settings={},
+        event_queue=asyncio.Queue(),
+    )
+
+    document = SimpleNamespace(
+        get_file=AsyncMock(
+            return_value=SimpleNamespace(
+                file_path="https://api.telegram.org/file/test-image.jpg"
+            )
+        ),
+        file_name="reference.jpg",
+        mime_type="image/jpeg",
+    )
+    update = _build_update_with_document(document, caption="edit this image")
+    context = _build_context()
+
+    abm = await adapter.convert_message(update, context)
+
+    assert abm is not None
+    assert abm.message_str == "edit this image"
+    assert len(abm.message) == 2
+    assert isinstance(abm.message[0], Comp.Image)
+    assert abm.message[0].file == "https://api.telegram.org/file/test-image.jpg"
+    assert isinstance(abm.message[1], Comp.Plain)
+    assert abm.message[1].text == "edit this image"
+
+
+@pytest.mark.asyncio
+async def test_convert_message_document_image_falls_back_to_filename_extension():
+    adapter = TelegramPlatformAdapter(
+        platform_config={"telegram_token": "123456:ABCDEF", "id": "telegram"},
+        platform_settings={},
+        event_queue=asyncio.Queue(),
+    )
+
+    document = SimpleNamespace(
+        get_file=AsyncMock(
+            return_value=SimpleNamespace(
+                file_path="https://api.telegram.org/file/reference-upload"
+            )
+        ),
+        file_name="reference.png",
+        mime_type="application/octet-stream",
+    )
+    update = _build_update_with_document(document)
+    context = _build_context()
+
+    abm = await adapter.convert_message(update, context)
+
+    assert abm is not None
+    assert len(abm.message) == 1
+    assert isinstance(abm.message[0], Comp.Image)
+    assert abm.message[0].file == "https://api.telegram.org/file/reference-upload"
+
+
+@pytest.mark.asyncio
+async def test_convert_message_non_image_document_stays_file():
+    adapter = TelegramPlatformAdapter(
+        platform_config={"telegram_token": "123456:ABCDEF", "id": "telegram"},
+        platform_settings={},
+        event_queue=asyncio.Queue(),
+    )
+
+    document = SimpleNamespace(
+        get_file=AsyncMock(
+            return_value=SimpleNamespace(
+                file_path="https://api.telegram.org/file/manual.pdf"
+            )
+        ),
+        file_name="manual.pdf",
+        mime_type="application/pdf",
+    )
+    update = _build_update_with_document(document)
+    context = _build_context()
+
+    abm = await adapter.convert_message(update, context)
+
+    assert abm is not None
+    assert len(abm.message) == 1
+    assert isinstance(abm.message[0], Comp.File)
+    assert abm.message[0].name == "manual.pdf"
 
 
 @pytest.mark.asyncio
