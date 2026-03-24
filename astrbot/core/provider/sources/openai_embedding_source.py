@@ -1,3 +1,5 @@
+from urllib.parse import urlsplit, urlunsplit
+
 import httpx
 from openai import AsyncOpenAI
 
@@ -24,9 +26,9 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         if proxy:
             logger.info(f"[OpenAI Embedding] {provider_id} Using proxy: {proxy}")
             http_client = httpx.AsyncClient(proxy=proxy)
-        api_base = provider_config.get(
-            "embedding_api_base", "https://api.openai.com/v1"
-        ).strip()
+        api_base = self._normalize_api_base(
+            provider_config.get("embedding_api_base", "https://api.openai.com/v1")
+        )
         logger.info(f"[OpenAI Embedding] {provider_id} Using API Base: {api_base}")
         self.client = AsyncOpenAI(
             api_key=provider_config.get("embedding_api_key"),
@@ -44,7 +46,8 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             model=self.model,
             **kwargs,
         )
-        return embedding.data[0].embedding
+        data = self._extract_embedding_data(embedding)
+        return data[0].embedding
 
     async def get_embeddings(self, text: list[str]) -> list[list[float]]:
         """批量获取文本的嵌入"""
@@ -54,7 +57,40 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             model=self.model,
             **kwargs,
         )
-        return [item.embedding for item in embeddings.data]
+        data = self._extract_embedding_data(embeddings)
+        return [item.embedding for item in data]
+
+    @staticmethod
+    def _normalize_api_base(api_base: str | None) -> str:
+        normalized = str(api_base or "").strip()
+        if not normalized:
+            return "https://api.openai.com/v1"
+
+        parts = urlsplit(normalized)
+        path = parts.path.rstrip("/")
+        if not path:
+            path = "/v1"
+        return urlunsplit(parts._replace(path=path))
+
+    def _extract_embedding_data(self, response) -> list:
+        if isinstance(response, str):
+            snippet = " ".join(response.strip().split())[:160]
+            raise RuntimeError(
+                "Embedding endpoint returned plain text/HTML instead of JSON. "
+                "Please check whether embedding_api_base should end with /v1. "
+                f"Response snippet: {snippet!r}"
+            )
+
+        data = getattr(response, "data", None)
+        if not isinstance(data, list):
+            raise RuntimeError(
+                "Embedding endpoint returned an unexpected response shape. "
+                "Please check whether embedding_api_base points to the "
+                "OpenAI-compatible embeddings endpoint."
+            )
+        if not data:
+            raise RuntimeError("Embedding endpoint returned an empty data list.")
+        return data
 
     def _embedding_kwargs(self) -> dict:
         """构建嵌入请求的可选参数"""
