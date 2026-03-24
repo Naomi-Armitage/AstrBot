@@ -51,7 +51,7 @@
     "back": "Back",
     "selectFile": "Select File",
     "refresh": "Refresh",
-    "updateAll": "Update All",
+    "updateAll": "Batch Update",
     "deleteSource": "Delete Source",
     "reshuffle": "Shuffle Again"
   },
@@ -194,9 +194,17 @@
       "confirm": "Force Update"
     },
     "updateAllConfirm": {
-      "title": "Confirm Update All Plugins",
-      "message": "Are you sure you want to update all {count} plugins? This operation may take some time.",
-      "confirm": "Confirm Update"
+      "title": "Batch Update Plugins",
+      "message": "Plugins with confirmed official updates and no custom update source are selected by default. You can also pick other plugins manually and set a different repository or branch for each one.",
+      "selectionSummary": "{count} of {total} plugins selected",
+      "selectRecommended": "Select Recommended ({count})",
+      "selectAll": "Select All",
+      "clearSelection": "Clear",
+      "empty": "No plugins are available for batch update.",
+      "currentVersionLabel": "Current",
+      "officialVersionLabel": "Official",
+      "sourceHint": "You can edit the update source for each plugin individually before starting the batch update.",
+      "confirm": "Start Batch Update"
     },
     "updatePreview": {
       "title": "Review Update",
@@ -245,6 +253,9 @@
     "supportedFormats": "Supports .zip extension files",
     "updateAllSuccess": "All upgradable extensions have been updated!",
     "updateAllFailed": "{failed} of {total} extensions failed to update:",
+    "batchUpdateNothingSelected": "Select at least one plugin before starting the batch update.",
+    "batchUpdateSuccess": "Selected plugins have been updated successfully.",
+    "batchUpdateFailed": "{failed} of {total} selected plugins failed to update:",
     "fillSourceNameAndUrl": "Please fill in the complete source name and URL",
     "invalidUrl": "Please enter a valid URL",
     "enterJsonUrl": "Please enter a URL that returns plugin list JSON data"

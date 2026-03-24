@@ -50,6 +50,8 @@ const {
   pluginUpdateDialog,
   pluginUpdateCustomSourceInfo,
   pluginUpdateOfficialVersionInfo,
+  updateAllSelectedCount,
+  updateAllRecommendedCount,
   getInitialListViewMode,
   isListView,
   pluginSearch,
@@ -100,6 +102,7 @@ const {
   totalPages,
   paginatedPlugins,
   updatableExtensions,
+  batchUpdateExtensions,
   toggleShowReserved,
   toast,
   resetLoadingDialog,
@@ -113,6 +116,10 @@ const {
   updateExtension,
   confirmPluginUpdate,
   showUpdateAllConfirm,
+  viewUpdateAllChangelog,
+  selectRecommendedUpdateAllItems,
+  selectAllUpdateAllItems,
+  clearUpdateAllSelection,
   confirmUpdateAll,
   cancelUpdateAll,
   updateAllExtensions,
@@ -518,28 +525,161 @@ const {
   />
 
   <!-- 更新全部插件确认对话框 -->
-  <v-dialog v-model="updateAllConfirmDialog.show" max-width="420">
+  <v-dialog v-model="updateAllConfirmDialog.show" max-width="980">
     <v-card class="rounded-lg">
       <v-card-title class="d-flex align-center pa-4">
         <v-icon color="warning" class="mr-2">mdi-update</v-icon>
         {{ tm("dialogs.updateAllConfirm.title") }}
       </v-card-title>
       <v-card-text>
-        <p class="text-body-1">
-          {{ tm("dialogs.updateAllConfirm.message", { count: updatableExtensions.length }) }}
-        </p>
+        <v-alert type="info" variant="tonal" class="mb-4">
+          {{
+            tm("dialogs.updateAllConfirm.message", {
+              count: updateAllRecommendedCount,
+            })
+          }}
+        </v-alert>
+
+        <div
+          class="d-flex align-center justify-space-between flex-wrap mb-4"
+          style="gap: 12px"
+        >
+          <div class="text-body-2 text-medium-emphasis">
+            {{
+              tm("dialogs.updateAllConfirm.selectionSummary", {
+                count: updateAllSelectedCount,
+                total: updateAllConfirmDialog.items.length,
+              })
+            }}
+          </div>
+          <div class="d-flex align-center flex-wrap" style="gap: 8px">
+            <v-btn
+              size="small"
+              variant="tonal"
+              color="warning"
+              @click="selectRecommendedUpdateAllItems"
+            >
+              {{
+                tm("dialogs.updateAllConfirm.selectRecommended", {
+                  count: updateAllRecommendedCount,
+                })
+              }}
+            </v-btn>
+            <v-btn size="small" variant="tonal" @click="selectAllUpdateAllItems">
+              {{ tm("dialogs.updateAllConfirm.selectAll") }}
+            </v-btn>
+            <v-btn size="small" variant="text" @click="clearUpdateAllSelection">
+              {{ tm("dialogs.updateAllConfirm.clearSelection") }}
+            </v-btn>
+          </div>
+        </div>
+
+        <div v-if="updateAllConfirmDialog.items.length === 0" class="text-medium-emphasis">
+          {{ tm("dialogs.updateAllConfirm.empty") }}
+        </div>
+
+        <div
+          v-else
+          style="max-height: 60vh; overflow-y: auto; padding-right: 8px"
+        >
+          <v-card
+            v-for="item in updateAllConfirmDialog.items"
+            :key="item.name"
+            class="mb-3"
+            variant="outlined"
+          >
+            <v-card-text>
+              <div class="d-flex align-start" style="gap: 12px">
+                <v-checkbox-btn
+                  v-model="item.selected"
+                  color="primary"
+                  class="mt-1"
+                ></v-checkbox-btn>
+
+                <div class="flex-grow-1">
+                  <div class="d-flex align-center flex-wrap" style="gap: 8px">
+                    <div class="text-subtitle-1 font-weight-medium">
+                      {{ item.displayName }}
+                    </div>
+                    <v-chip size="small" variant="outlined">
+                      {{ tm("dialogs.updateAllConfirm.currentVersionLabel") }}:
+                      {{ item.currentVersion || tm("status.unknown") }}
+                    </v-chip>
+                    <v-chip
+                      v-if="item.officialVersion"
+                      size="small"
+                      :color="item.hasOfficialUpdate ? 'warning' : undefined"
+                      :variant="item.hasOfficialUpdate ? 'tonal' : 'outlined'"
+                    >
+                      {{ tm("dialogs.updateAllConfirm.officialVersionLabel") }}:
+                      {{ item.officialVersion }}
+                    </v-chip>
+                    <v-chip
+                      v-if="item.hasCustomUpdateSource"
+                      size="small"
+                      color="info"
+                      variant="tonal"
+                    >
+                      {{
+                        item.customUpdateSourceLabel ||
+                        tm("card.status.customSourceShort")
+                      }}
+                    </v-chip>
+                  </div>
+
+                  <div
+                    v-if="item.displayName !== item.name"
+                    class="text-caption text-medium-emphasis mt-1"
+                  >
+                    {{ item.name }}
+                  </div>
+
+                  <v-text-field
+                    v-model="item.repoUrl"
+                    :label="tm('dialogs.updatePreview.sourceLabel')"
+                    variant="outlined"
+                    prepend-inner-icon="mdi-source-branch"
+                    class="mt-3"
+                    placeholder="https://github.com/owner/repo/tree/codex/my-branch"
+                    hide-details
+                  ></v-text-field>
+
+                  <div class="text-caption text-medium-emphasis mt-2">
+                    {{ tm("dialogs.updateAllConfirm.sourceHint") }}
+                  </div>
+
+                  <div class="d-flex align-center flex-wrap mt-3" style="gap: 12px">
+                    <v-btn
+                      size="small"
+                      variant="tonal"
+                      prepend-icon="mdi-book-open-variant"
+                      @click="viewUpdateAllChangelog(item)"
+                    >
+                      {{ tm("pluginChangelog.menuTitle") }}
+                    </v-btn>
+                    <v-checkbox
+                      v-model="item.persistUpdateSource"
+                      :label="tm('dialogs.updatePreview.persistSource')"
+                      color="primary"
+                      density="comfortable"
+                      hide-details
+                      class="my-0"
+                    ></v-checkbox>
+                  </div>
+                </div>
+              </div>
+            </v-card-text>
+          </v-card>
+        </div>
       </v-card-text>
       <v-card-actions class="pa-4">
         <v-spacer></v-spacer>
-        <v-btn
-          variant="text"
-          @click="cancelUpdateAll"
-        >{{ tm("buttons.cancel") }}</v-btn>
-        <v-btn
-          color="warning"
-          variant="flat"
-          @click="confirmUpdateAll"
-        >{{ tm("dialogs.updateAllConfirm.confirm") }}</v-btn>
+        <v-btn variant="text" @click="cancelUpdateAll">
+          {{ tm("buttons.cancel") }}
+        </v-btn>
+        <v-btn color="warning" variant="flat" @click="confirmUpdateAll">
+          {{ tm("dialogs.updateAllConfirm.confirm") }}
+        </v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>

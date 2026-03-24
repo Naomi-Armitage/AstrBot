@@ -103,6 +103,7 @@ const {
   totalPages,
   paginatedPlugins,
   updatableExtensions,
+  batchUpdateExtensions,
   toggleShowReserved,
   toast,
   resetLoadingDialog,
@@ -116,6 +117,10 @@ const {
   handleUninstallConfirm,
   updateExtension,
   showUpdateAllConfirm,
+  viewUpdateAllChangelog,
+  selectRecommendedUpdateAllItems,
+  selectAllUpdateAllItems,
+  clearUpdateAllSelection,
   confirmUpdateAll,
   cancelUpdateAll,
   updateAllExtensions,
@@ -313,7 +318,7 @@ const pinnedPlugins = computed(() => {
                     <v-btn
                       color="warning"
                       variant="tonal"
-                      :disabled="updatableExtensions.length === 0"
+                      :disabled="batchUpdateExtensions.length === 0"
                       :loading="updatingAll"
                       @click="showUpdateAllConfirm"
                     >

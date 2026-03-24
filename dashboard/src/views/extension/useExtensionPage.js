@@ -174,6 +174,7 @@ export const useExtensionPage = () => {
   // 更新全部插件确认对话框
   const updateAllConfirmDialog = reactive({
     show: false,
+    items: [],
   });
   
   // 插件更新日志对话框（复用 ReadmeDialog）
@@ -653,6 +654,19 @@ export const useExtensionPage = () => {
   });
   
   // 方法
+  const batchUpdateExtensions = computed(() => {
+    const data = Array.isArray(extension_data?.data) ? extension_data.data : [];
+    return data.filter((ext) => !ext.reserved);
+  });
+
+  const updateAllSelectedCount = computed(
+    () => updateAllConfirmDialog.items.filter((item) => item.selected).length,
+  );
+
+  const updateAllRecommendedCount = computed(
+    () => updateAllConfirmDialog.items.filter((item) => item.recommended).length,
+  );
+
   const toggleShowReserved = () => {
     showReserved.value = !showReserved.value;
     // 保存到 localStorage
@@ -874,6 +888,52 @@ export const useExtensionPage = () => {
     pluginUpdateDialog.persistUpdateSource = !!extension.has_custom_update_source;
     pluginUpdateDialog.forceUpdate = !!forceUpdate;
     pluginUpdateDialog.show = true;
+  };
+
+  const createBatchUpdateItem = (extension) => ({
+    name: extension.name,
+    displayName: extension.display_name || extension.name,
+    currentVersion: normalizeUpdateSource(extension.version),
+    officialVersion: normalizeUpdateSource(
+      extension.official_online_version || extension.online_version,
+    ),
+    hasOfficialUpdate: !!extension.has_update,
+    hasCustomUpdateSource: !!extension.has_custom_update_source,
+    recommended: !!extension.has_update && !extension.has_custom_update_source,
+    customUpdateSourceLabel: getCustomUpdateSourceLabel(extension),
+    defaultRepoUrl: normalizeUpdateSource(extension.repo),
+    repoUrl: getEffectiveUpdateRepoUrl(extension),
+    hadCustomUpdateSource: !!extension.has_custom_update_source,
+    persistUpdateSource: !!extension.has_custom_update_source,
+    selected: !!extension.has_update && !extension.has_custom_update_source,
+  });
+
+  const viewUpdateAllChangelog = (item) => {
+    if (!item?.name) return;
+    changelogDialog.pluginName = item.name;
+    changelogDialog.repoUrl =
+      normalizeUpdateSource(item.repoUrl) ||
+      normalizeUpdateSource(item.defaultRepoUrl) ||
+      null;
+    changelogDialog.show = true;
+  };
+
+  const selectRecommendedUpdateAllItems = () => {
+    updateAllConfirmDialog.items.forEach((item) => {
+      item.selected = !!item.recommended;
+    });
+  };
+
+  const selectAllUpdateAllItems = () => {
+    updateAllConfirmDialog.items.forEach((item) => {
+      item.selected = true;
+    });
+  };
+
+  const clearUpdateAllSelection = () => {
+    updateAllConfirmDialog.items.forEach((item) => {
+      item.selected = false;
+    });
   };
 
   const isUsingOfficialUpdateSource = computed(() => {
@@ -1244,14 +1304,33 @@ export const useExtensionPage = () => {
   };
 
   const showUpdateAllConfirm = () => {
-    if (updatableExtensions.value.length === 0) return;
+    if (batchUpdateExtensions.value.length === 0) return;
+    updateAllConfirmDialog.items = batchUpdateExtensions.value
+      .slice()
+      .sort((left, right) => {
+        const rightWeight = right.has_update ? 1 : 0;
+        const leftWeight = left.has_update ? 1 : 0;
+        if (rightWeight !== leftWeight) {
+          return rightWeight - leftWeight;
+        }
+        return normalizeStr(left.display_name || left.name).localeCompare(
+          normalizeStr(right.display_name || right.name),
+          undefined,
+          { sensitivity: "base" },
+        );
+      })
+      .map(createBatchUpdateItem);
     updateAllConfirmDialog.show = true;
   };
   
   // 确认更新全部插件
   const confirmUpdateAll = () => {
+    if (updateAllSelectedCount.value === 0) {
+      toast(tm("messages.batchUpdateNothingSelected"), "warning");
+      return;
+    }
     updateAllConfirmDialog.show = false;
-    updateAllExtensions();
+    updateAllExtensions(updateAllConfirmDialog.items.filter((item) => item.selected));
   };
   
   // 取消更新全部插件
@@ -1259,35 +1338,74 @@ export const useExtensionPage = () => {
     updateAllConfirmDialog.show = false;
   };
   
-  const updateAllExtensions = async () => {
-    if (updatingAll.value || updatableExtensions.value.length === 0) return;
+  const updateAllExtensions = async (selectedItems = []) => {
+    if (updatingAll.value || selectedItems.length === 0) return;
     updatingAll.value = true;
     loadingDialog.title = tm("status.loading");
     loadingDialog.statusCode = 0;
     loadingDialog.result = "";
     loadingDialog.show = true;
-  
-    const targets = updatableExtensions.value.map((ext) => ext.name);
+
+    const results = [];
     try {
-      const res = await axios.post("/api/plugin/update-all", {
-        names: targets,
-        proxy: getSelectedGitHubProxy(),
-      });
-  
-      if (res.data.status === "error") {
-        onLoadingDialogResult(
-          2,
-          res.data.message ||
-            tm("messages.updateAllFailed", {
-              failed: targets.length,
-              total: targets.length,
-            }),
-          -1,
-        );
-        return;
+      for (const item of selectedItems) {
+        const repoUrl = normalizeUpdateSource(item.repoUrl);
+        const fallbackRepoUrl = normalizeUpdateSource(item.defaultRepoUrl);
+        const effectiveRepoUrl = repoUrl || fallbackRepoUrl;
+
+        if (!effectiveRepoUrl) {
+          results.push({
+            name: item.name,
+            status: "error",
+            message: tm("dialogs.updatePreview.sourceRequired"),
+          });
+          continue;
+        }
+
+        try {
+          new URL(effectiveRepoUrl);
+        } catch (error) {
+          results.push({
+            name: item.name,
+            status: "error",
+            message: tm("dialogs.updatePreview.invalidSource"),
+          });
+          continue;
+        }
+
+        try {
+          const res = await axios.post("/api/plugin/update", {
+            name: item.name,
+            proxy: getSelectedGitHubProxy(),
+            repo_url: effectiveRepoUrl,
+            persist_update_source: item.persistUpdateSource,
+            clear_persisted_update_source:
+              item.hadCustomUpdateSource && !item.persistUpdateSource,
+          });
+
+          if (res.data.status === "error") {
+            results.push({
+              name: item.name,
+              status: "error",
+              message: res.data.message || tm("messages.operationFailed"),
+            });
+            continue;
+          }
+
+          results.push({
+            name: item.name,
+            status: "ok",
+            message: res.data.message || tm("messages.updateSuccess"),
+          });
+        } catch (error) {
+          results.push({
+            name: item.name,
+            status: "error",
+            message: resolveErrorMessage(error, tm("messages.operationFailed")),
+          });
+        }
       }
-  
-      const results = res.data.data?.results || [];
+
       const failures = results.filter((r) => r.status !== "ok");
       try {
         await getExtensions();
@@ -1296,13 +1414,13 @@ export const useExtensionPage = () => {
           err.response?.data?.message || err.message || String(err);
         failures.push({ name: "refresh", status: "error", message: errorMsg });
       }
-  
+
       if (failures.length === 0) {
-        onLoadingDialogResult(1, tm("messages.updateAllSuccess"));
+        onLoadingDialogResult(1, tm("messages.batchUpdateSuccess"));
       } else {
-        const failureText = tm("messages.updateAllFailed", {
+        const failureText = tm("messages.batchUpdateFailed", {
           failed: failures.length,
-          total: targets.length,
+          total: selectedItems.length,
         });
         const detail = failures.map((f) => `${f.name}: ${f.message}`).join("\n");
         onLoadingDialogResult(2, `${failureText}\n${detail}`, -1);
@@ -2029,6 +2147,8 @@ export const useExtensionPage = () => {
     pluginUpdateDialog,
     pluginUpdateCustomSourceInfo,
     pluginUpdateOfficialVersionInfo,
+    updateAllSelectedCount,
+    updateAllRecommendedCount,
     getInitialListViewMode,
     isListView,
     pluginSearch,
@@ -2090,6 +2210,7 @@ export const useExtensionPage = () => {
     totalPages,
     paginatedPlugins,
     updatableExtensions,
+    batchUpdateExtensions,
     toggleShowReserved,
     toast,
     resetLoadingDialog,
@@ -2107,6 +2228,10 @@ export const useExtensionPage = () => {
     updateExtension,
     confirmPluginUpdate,
     showUpdateAllConfirm,
+    viewUpdateAllChangelog,
+    selectRecommendedUpdateAllItems,
+    selectAllUpdateAllItems,
+    clearUpdateAllSelection,
     confirmUpdateAll,
     cancelUpdateAll,
     updateAllExtensions,
