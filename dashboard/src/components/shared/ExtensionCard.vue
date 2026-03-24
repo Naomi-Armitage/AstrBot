@@ -476,7 +476,7 @@ const viewChangelog = () => {
                 ? tm("card.actions.updateTo") + " " + extension.online_version
                 : extension.has_custom_update_source
                   ? tm("card.actions.updateFromCustomSource")
-                : tm("card.actions.reinstall")
+                : tm("card.actions.changeSourceOrReinstall")
             }}</v-list-item-title>
           </v-list-item>
 

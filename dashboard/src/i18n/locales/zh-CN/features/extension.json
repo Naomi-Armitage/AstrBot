@@ -364,6 +364,7 @@
       "viewHandlers": "查看行为",
       "updateTo": "更新到",
       "updateFromCustomSource": "从自定义源更新",
+      "changeSourceOrReinstall": "切换更新源或重装",
       "reinstall": "重新安装"
     },
     "status": {

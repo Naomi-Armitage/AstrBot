@@ -171,12 +171,6 @@ export const useExtensionPage = () => {
     repoUrl: null,
   });
   
-  // 强制更新确认对话框
-  const forceUpdateDialog = reactive({
-    show: false,
-    extensionName: "",
-  });
-  
   // 更新全部插件确认对话框
   const updateAllConfirmDialog = reactive({
     show: false,
@@ -1182,14 +1176,9 @@ export const useExtensionPage = () => {
       return;
     }
 
-    const canPreviewUpdate = ext.has_update || ext.has_custom_update_source;
-    if (!canPreviewUpdate && !forceUpdate) {
-      forceUpdateDialog.extensionName = extension_name;
-      forceUpdateDialog.show = true;
-      return;
-    }
-
-    openPluginUpdateDialog(ext, forceUpdate);
+    const shouldForceUpdate =
+      forceUpdate || (!ext.has_update && !ext.has_custom_update_source);
+    openPluginUpdateDialog(ext, shouldForceUpdate);
   };
 
   const confirmPluginUpdate = async () => {
@@ -1268,13 +1257,6 @@ export const useExtensionPage = () => {
   // 取消更新全部插件
   const cancelUpdateAll = () => {
     updateAllConfirmDialog.show = false;
-  };
-  
-  const confirmForceUpdate = () => {
-    const name = forceUpdateDialog.extensionName;
-    forceUpdateDialog.show = false;
-    forceUpdateDialog.extensionName = "";
-    updateExtension(name, true);
   };
   
   const updateAllExtensions = async () => {
@@ -2042,7 +2024,6 @@ export const useExtensionPage = () => {
     curr_namespace,
     updatingAll,
     readmeDialog,
-    forceUpdateDialog,
     updateAllConfirmDialog,
     changelogDialog,
     pluginUpdateDialog,
@@ -2128,7 +2109,6 @@ export const useExtensionPage = () => {
     showUpdateAllConfirm,
     confirmUpdateAll,
     cancelUpdateAll,
-    confirmForceUpdate,
     updateAllExtensions,
     pluginOn,
     pluginOff,

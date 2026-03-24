@@ -360,6 +360,7 @@
             "viewHandlers": "Действия",
             "updateTo": "Обновить до",
             "updateFromCustomSource": "Обновить из своего источника",
+            "changeSourceOrReinstall": "Сменить источник или переустановить",
             "reinstall": "Переустановить"
         },
         "status": {

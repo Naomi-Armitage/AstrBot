@@ -361,6 +361,7 @@
       "viewHandlers": "View Handlers",
       "updateTo": "Update to",
       "updateFromCustomSource": "Update from custom source",
+      "changeSourceOrReinstall": "Change source or reinstall",
       "reinstall": "Reinstall"
     },
     "status": {
