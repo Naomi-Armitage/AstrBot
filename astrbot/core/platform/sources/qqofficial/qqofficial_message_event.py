@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import logging
 import os
 import random
 import uuid
@@ -17,6 +18,13 @@ from botpy.http import Route
 from botpy.types import message
 from botpy.types.message import MarkdownPayload, Media
 from PIL import Image as PILImage
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, MessageChain
@@ -45,6 +53,22 @@ def _patch_qq_botpy_formdata() -> None:
 
 
 _patch_qq_botpy_formdata()
+
+# Retry decorator for QQ Official API transient errors (HTTP 500/504)
+_qqofficial_retry = retry(
+    retry=retry_if_exception_type(
+        (
+            botpy.errors.ServerError,
+            botpy.errors.SequenceNumberError,
+            OSError,
+            asyncio.TimeoutError,
+        )
+    ),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=2, min=2, max=30),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 
 
 class QQOfficialMessageEvent(AstrMessageEvent):
@@ -475,21 +499,26 @@ class QQOfficialMessageEvent(AstrMessageEvent):
             "srv_send_msg": False,
         }
 
-        result = None
-        if "openid" in kwargs:
-            payload["openid"] = kwargs["openid"]
-            route = Route("POST", "/v2/users/{openid}/files", openid=kwargs["openid"])
-            result = await self.bot.api._http.request(route, json=payload)
-        elif "group_openid" in kwargs:
-            payload["group_openid"] = kwargs["group_openid"]
-            route = Route(
-                "POST",
-                "/v2/groups/{group_openid}/files",
-                group_openid=kwargs["group_openid"],
-            )
-            result = await self.bot.api._http.request(route, json=payload)
-        else:
-            raise ValueError("Invalid upload parameters")
+        @_qqofficial_retry
+        async def _do_upload():
+            if "openid" in kwargs:
+                payload["openid"] = kwargs["openid"]
+                route = Route(
+                    "POST", "/v2/users/{openid}/files", openid=kwargs["openid"]
+                )
+                return await self.bot.api._http.request(route, json=payload)
+            elif "group_openid" in kwargs:
+                payload["group_openid"] = kwargs["group_openid"]
+                route = Route(
+                    "POST",
+                    "/v2/groups/{group_openid}/files",
+                    group_openid=kwargs["group_openid"],
+                )
+                return await self.bot.api._http.request(route, json=payload)
+            else:
+                raise ValueError("Invalid upload parameters")
+
+        result = await _do_upload()
 
         if not isinstance(result, dict):
             raise RuntimeError(
@@ -512,7 +541,7 @@ class QQOfficialMessageEvent(AstrMessageEvent):
     ) -> Media | None:
         """上传媒体文件"""
         # 构建基础payload
-        payload = {"file_type": file_type, "srv_send_msg": srv_send_msg}
+        payload: dict = {"file_type": file_type, "srv_send_msg": srv_send_msg}
         if file_name:
             payload["file_name"] = file_name
 
@@ -541,9 +570,12 @@ class QQOfficialMessageEvent(AstrMessageEvent):
         else:
             return None
 
+        @_qqofficial_retry
+        async def _do_upload():
+            return await self.bot.api._http.request(route, json=payload)
+
         try:
-            # 使用底层HTTP请求
-            result = await self.bot.api._http.request(route, json=payload)
+            result = await _do_upload()
 
             if result:
                 if not isinstance(result, dict):
@@ -555,6 +587,8 @@ class QQOfficialMessageEvent(AstrMessageEvent):
                     file_info=result["file_info"],
                     ttl=result.get("ttl", 0),
                 )
+        except (botpy.errors.ServerError, botpy.errors.SequenceNumberError):
+            logger.error(f"上传媒体文件失败，共尝试5次后放弃: {file_source}")
         except Exception as e:
             logger.error(f"上传请求错误: {e}")
 

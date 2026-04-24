@@ -162,7 +162,7 @@ const {
 </script>
 
 <template>
-  <v-row>
+  <v-row class="extension-page">
     <v-col cols="12" md="12">
       <v-card variant="flat" style="background-color: transparent">
         <!-- 标签页 -->
@@ -171,7 +171,7 @@ const {
           <InstalledPluginsTab :state="pageState" />
 
           <!-- 指令面板标签页内容 -->
-          <v-tab-item v-show="activeTab === 'components'">
+          <v-tab-item v-if="activeTab === 'components'">
             <div class="mb-4 pt-4 pb-4">
               <div class="d-flex align-center flex-wrap" style="gap: 12px">
                 <h2 class="text-h2 mb-0">{{ tm("tabs.handlersOperation") }}</h2>
@@ -189,7 +189,7 @@ const {
           </v-tab-item>
 
           <!-- 已安装的 MCP 服务器标签页内容 -->
-          <v-tab-item v-show="activeTab === 'mcp'">
+          <v-tab-item v-if="activeTab === 'mcp'">
             <div class="mb-4 pt-4 pb-4">
               <div class="d-flex align-center flex-wrap" style="gap: 12px">
                 <h2 class="text-h2 mb-0">{{ tm("tabs.installedMcpServers") }}</h2>
@@ -207,7 +207,7 @@ const {
           </v-tab-item>
 
           <!-- Skills 标签页内容 -->
-          <v-tab-item v-show="activeTab === 'skills'">
+          <v-tab-item v-if="activeTab === 'skills'">
             <div class="mb-4 pt-4 pb-4">
               <div class="d-flex align-center flex-wrap" style="gap: 12px">
                 <h2 class="text-h2 mb-0">{{ tm("tabs.skills") }}</h2>
@@ -236,7 +236,8 @@ const {
         <v-btn
           variant="text"
           prepend-icon="mdi-book-open-variant"
-          href="https://astrbot.app/dev/plugin.html"
+          href="https://docs.astrbot.app/dev/star/plugin-new.html"
+          rel="noopener noreferrer"
           target="_blank"
           color="primary"
           class="text-none"
@@ -396,6 +397,7 @@ const {
     elevation="24"
     :color="snack_success"
     v-model="snack_show"
+    location="bottom center"
   >
     {{ snack_message }}
   </v-snackbar>
@@ -1088,5 +1090,11 @@ const {
 .fab-button:hover {
   transform: translateY(-4px) scale(1.05);
   box-shadow: 0 12px 20px rgba(var(--v-theme-primary), 0.4);
+}
+</style>
+
+<style>
+.v-theme--PurpleThemeDark .extension-page .plugin-handler-item {
+  background-color: rgb(var(--v-theme-mcpCardBg));
 }
 </style>

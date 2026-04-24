@@ -14,6 +14,13 @@ import {
   getValidHashTab,
   replaceTabRoute,
 } from "@/utils/hashRouteTabs.mjs";
+import {
+  PIN_UPDATES_ON_TOP_STORAGE_KEY,
+  PLUGIN_LIST_VIEW_MODE_STORAGE_KEY,
+  SHOW_RESERVED_PLUGINS_STORAGE_KEY,
+  readBooleanPreference,
+  writeBooleanPreference,
+} from "./extensionPreferenceStorage.mjs";
 import { ref, computed, onMounted, onUnmounted, reactive, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useDisplay } from "vuetify";
@@ -138,11 +145,7 @@ export const useExtensionPage = () => {
   
   // 从 localStorage 恢复显示系统插件的状态，默认为 false（隐藏）
   const getInitialShowReserved = () => {
-    if (typeof window !== "undefined" && window.localStorage) {
-      const saved = localStorage.getItem("showReservedPlugins");
-      return saved === "true";
-    }
-    return false;
+    return readBooleanPreference(SHOW_RESERVED_PLUGINS_STORAGE_KEY, false);
   };
   const showReserved = ref(getInitialShowReserved());
   const snack_message = ref("");
@@ -197,16 +200,20 @@ export const useExtensionPage = () => {
   // 新增变量支持列表视图
   // 从 localStorage 恢复显示模式，默认为 false（卡片视图）
   const getInitialListViewMode = () => {
-    if (typeof window !== "undefined" && window.localStorage) {
-      return localStorage.getItem("pluginListViewMode") === "true";
-    }
-    return false;
+    return readBooleanPreference(PLUGIN_LIST_VIEW_MODE_STORAGE_KEY, false);
   };
   const isListView = ref(getInitialListViewMode());
   const pluginSearch = ref("");
   const installedStatusFilter = ref("all");
   const installedSortBy = ref("default");
   const installedSortOrder = ref("desc");
+  const getInitialPinUpdatesOnTop = () => {
+    return readBooleanPreference(PIN_UPDATES_ON_TOP_STORAGE_KEY, true);
+  };
+  const pinUpdatesOnTop = ref(getInitialPinUpdatesOnTop());
+  watch(pinUpdatesOnTop, (val) => {
+    writeBooleanPreference(PIN_UPDATES_ON_TOP_STORAGE_KEY, val);
+  });
   const loading_ = ref(false);
   
   // 分页相关
@@ -445,6 +452,19 @@ export const useExtensionPage = () => {
     return Number.isFinite(parsed) ? parsed : null;
   };
 
+  const compareInstalledFallback = (left, right) => {
+    const nameCompare = compareInstalledPluginNames(left.plugin, right.plugin);
+    return nameCompare !== 0 ? nameCompare : left.index - right.index;
+  };
+
+  const compareInstalledUpdatePinning = (left, right) => {
+    const leftHasUpdate =
+      left.plugin?.has_update || left.plugin?.has_custom_update_source ? 1 : 0;
+    const rightHasUpdate =
+      right.plugin?.has_update || right.plugin?.has_custom_update_source ? 1 : 0;
+    return rightHasUpdate - leftHasUpdate;
+  };
+
   const sortInstalledPlugins = (plugins) => {
     return plugins
       .map((plugin, index) => ({
@@ -453,19 +473,24 @@ export const useExtensionPage = () => {
         installedAtTimestamp: getInstalledAtTimestamp(plugin),
       }))
       .sort((left, right) => {
-        const fallbackNameCompare = compareInstalledPluginNames(
-          left.plugin,
-          right.plugin,
-        );
-        const fallbackResult =
-          fallbackNameCompare !== 0 ? fallbackNameCompare : left.index - right.index;
+        if (
+          pinUpdatesOnTop.value &&
+          installedSortBy.value !== "update_status"
+        ) {
+          // Pinning updates is a primary grouping; the selected sort order still
+          // applies within the "has update" and "no update" groups below.
+          const pinCompare = compareInstalledUpdatePinning(left, right);
+          if (pinCompare !== 0) {
+            return pinCompare;
+          }
+        }
 
         if (installedSortBy.value === "install_time") {
           const leftTimestamp = left.installedAtTimestamp;
           const rightTimestamp = right.installedAtTimestamp;
 
           if (leftTimestamp == null && rightTimestamp == null) {
-            return fallbackResult;
+            return compareInstalledFallback(left, right);
           }
           if (leftTimestamp == null) {
             return 1;
@@ -478,7 +503,9 @@ export const useExtensionPage = () => {
             installedSortOrder.value === "desc"
               ? rightTimestamp - leftTimestamp
               : leftTimestamp - rightTimestamp;
-          return timeDiff !== 0 ? timeDiff : fallbackResult;
+          return timeDiff !== 0
+            ? timeDiff
+            : compareInstalledFallback(left, right);
         }
 
         if (installedSortBy.value === "name") {
@@ -488,7 +515,7 @@ export const useExtensionPage = () => {
               ? -nameCompare
               : nameCompare;
           }
-          return left.index - right.index;
+          return compareInstalledFallback(left, right);
         }
 
         if (installedSortBy.value === "author") {
@@ -501,22 +528,20 @@ export const useExtensionPage = () => {
               ? -authorCompare
               : authorCompare;
           }
-          return fallbackResult;
+          return compareInstalledFallback(left, right);
         }
 
         if (installedSortBy.value === "update_status") {
-          const leftHasUpdate =
-            left.plugin?.has_update || left.plugin?.has_custom_update_source ? 1 : 0;
-          const rightHasUpdate =
-            right.plugin?.has_update || right.plugin?.has_custom_update_source ? 1 : 0;
           const updateDiff =
             installedSortOrder.value === "desc"
-              ? rightHasUpdate - leftHasUpdate
-              : leftHasUpdate - rightHasUpdate;
-          return updateDiff !== 0 ? updateDiff : fallbackResult;
+              ? compareInstalledUpdatePinning(left, right)
+              : compareInstalledUpdatePinning(right, left);
+          return updateDiff !== 0
+            ? updateDiff
+            : compareInstalledFallback(left, right);
         }
 
-        return fallbackResult;
+        return compareInstalledFallback(left, right);
       })
       .map((item) => item.plugin);
   };
@@ -670,9 +695,7 @@ export const useExtensionPage = () => {
   const toggleShowReserved = () => {
     showReserved.value = !showReserved.value;
     // 保存到 localStorage
-    if (typeof window !== "undefined" && window.localStorage) {
-      localStorage.setItem("showReservedPlugins", showReserved.value.toString());
-    }
+    writeBooleanPreference(SHOW_RESERVED_PLUGINS_STORAGE_KEY, showReserved.value);
   };
   
   const toast = (message, success) => {
@@ -1744,7 +1767,7 @@ export const useExtensionPage = () => {
   const checkAlreadyInstalled = () => {
     const data = Array.isArray(extension_data?.data) ? extension_data.data : [];
     const installedRepos = new Set(data.map((ext) => ext.repo?.toLowerCase()));
-    const installedNames = new Set(data.map((ext) => ext.name));
+    const installedNames = new Set(data.map((ext) => normalizeStr(ext.name).replace(/_/g, '-')));//统一格式，以防下面的匹配不生效
     const installedByRepo = new Map(
       data
         .filter((ext) => ext.repo)
@@ -1771,10 +1794,10 @@ export const useExtensionPage = () => {
           plugin.astrbot_version = matchedInstalled.astrbot_version;
         }
       }
-  
+
       plugin.installed =
         installedRepos.has(plugin.repo?.toLowerCase()) ||
-        installedNames.has(plugin.name);
+        installedNames.has(normalizeStr(plugin.name).replace(/_/g, '-'));//统一格式，防止匹配失败
     }
   
     let installed = [];
@@ -2059,9 +2082,7 @@ export const useExtensionPage = () => {
   
   // 监听显示模式变化并保存到 localStorage
   watch(isListView, (newVal) => {
-    if (typeof window !== "undefined" && window.localStorage) {
-      localStorage.setItem("pluginListViewMode", String(newVal));
-    }
+    writeBooleanPreference(PLUGIN_LIST_VIEW_MODE_STORAGE_KEY, newVal);
   });
   
   watch(
@@ -2155,6 +2176,7 @@ export const useExtensionPage = () => {
     installedStatusFilter,
     installedSortBy,
     installedSortOrder,
+    pinUpdatesOnTop,
     loading_,
     currentPage,
     marketCategoryFilter,
