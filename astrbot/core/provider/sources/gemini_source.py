@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import random
+import re
 import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -27,6 +28,144 @@ from astrbot.core.utils.media_utils import ensure_wav
 from astrbot.core.utils.network_utils import is_connection_error, log_connection_failure
 
 from ..register import register_provider_adapter
+
+# Tags that some Gemini-compatible proxies (e.g. gemini-cli relays) emit inline
+# inside `part.text` to wrap chain-of-thought, instead of marking the part with
+# `thought=True`. We strip these so the model's internal monologue does not leak
+# into the user-visible reply, and we route the extracted text into
+# `reasoning_content` so downstream consumers can still access it if they want.
+_THOUGHT_TAG_RE = re.compile(
+    r"<(thought|thinking|think|seed:think)(?:\s[^>]*)?>(.*?)</\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_THOUGHT_OPEN_RE = re.compile(
+    r"<(thought|thinking|think|seed:think)(?:\s[^>]*)?>",
+    re.IGNORECASE,
+)
+
+
+def _strip_thought_tags(text: str) -> tuple[str, str]:
+    """Remove complete `<thought>...</thought>`-style blocks from ``text``.
+
+    Returns ``(visible_text, thought_text)`` — visible text has the blocks
+    cut out (with surrounding whitespace tidied), thought text is the
+    concatenation of the inner contents.
+    """
+    if not text or "<" not in text:
+        return text, ""
+    thoughts: list[str] = []
+
+    def _capture(match: re.Match[str]) -> str:
+        thoughts.append(match.group(2))
+        return ""
+
+    cleaned = _THOUGHT_TAG_RE.sub(_capture, text)
+    if thoughts:
+        # Collapse the empty lines left behind by removed blocks so the
+        # visible text doesn't suddenly grow a run of blank lines.
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip("\n")
+    return cleaned, "\n\n".join(t.strip() for t in thoughts if t.strip())
+
+
+class _ThoughtStreamStripper:
+    """Stateful stripper for streaming chunks.
+
+    A single ``<thought>`` block can span multiple chunks, and the opening or
+    closing tag itself can be split across chunks. This class buffers just
+    enough trailing text to make sure we never emit a partial tag to the user
+    or accidentally drop characters that turn out not to be a tag.
+    """
+
+    # Hold back at most this many trailing chars when they could be the start
+    # of an open/close tag we haven't fully seen yet.
+    _MAX_PARTIAL = 32
+
+    def __init__(self) -> None:
+        self._pending = ""
+        self._in_block = False
+        self._active_tag: str | None = None
+
+    def _close_re(self, tag: str) -> re.Pattern[str]:
+        return re.compile(rf"</{re.escape(tag)}\s*>", re.IGNORECASE)
+
+    @staticmethod
+    def _trailing_could_be_tag(text: str) -> int:
+        """Return the index from which trailing text might be a partial tag.
+
+        If the buffer ends with something like ``"foo <th"``, we want to hold
+        back ``"<th"`` until more arrives. Returns ``len(text)`` when there is
+        nothing to hold back.
+        """
+        last_lt = text.rfind("<")
+        if last_lt == -1:
+            return len(text)
+        tail = text[last_lt:]
+        if ">" in tail:
+            return len(text)
+        # Only hold back if the tail looks plausible (avoids holding the entire
+        # message hostage on a stray `<` that isn't a tag).
+        if len(tail) > _ThoughtStreamStripper._MAX_PARTIAL:
+            return len(text)
+        return last_lt
+
+    def feed(self, chunk: str) -> tuple[str, str]:
+        """Process ``chunk``; return ``(visible_text, thought_text)``."""
+        if not chunk:
+            return "", ""
+        self._pending += chunk
+        visible_parts: list[str] = []
+        thought_parts: list[str] = []
+
+        while self._pending:
+            if self._in_block:
+                assert self._active_tag is not None
+                close_match = self._close_re(self._active_tag).search(self._pending)
+                if close_match:
+                    thought_parts.append(self._pending[: close_match.start()])
+                    self._pending = self._pending[close_match.end() :]
+                    self._in_block = False
+                    self._active_tag = None
+                    continue
+                # No closing tag yet. Keep most as thought; hold a small tail
+                # in case the closing tag is split across chunks.
+                hold_from = max(
+                    0, len(self._pending) - _ThoughtStreamStripper._MAX_PARTIAL
+                )
+                if hold_from > 0:
+                    thought_parts.append(self._pending[:hold_from])
+                    self._pending = self._pending[hold_from:]
+                break
+
+            open_match = _THOUGHT_OPEN_RE.search(self._pending)
+            if open_match:
+                visible_parts.append(self._pending[: open_match.start()])
+                self._active_tag = open_match.group(1).lower()
+                self._in_block = True
+                self._pending = self._pending[open_match.end() :]
+                continue
+
+            safe_until = self._trailing_could_be_tag(self._pending)
+            if safe_until > 0:
+                visible_parts.append(self._pending[:safe_until])
+                self._pending = self._pending[safe_until:]
+            break
+
+        return "".join(visible_parts), "".join(thought_parts)
+
+    def flush(self) -> tuple[str, str]:
+        """Drain remaining buffer at end-of-stream."""
+        if not self._pending:
+            return "", ""
+        if self._in_block:
+            # Unclosed thought block — treat what we have as thought to be safe.
+            thought = self._pending
+            self._pending = ""
+            self._in_block = False
+            self._active_tag = None
+            return "", thought
+        visible = self._pending
+        self._pending = ""
+        return visible, ""
 
 
 class SuppressNonTextPartsWarning(logging.Filter):
@@ -444,6 +583,21 @@ class ProviderGoogleGenAI(Provider):
         ]
         return "".join(thought_buf).strip()
 
+    def _extract_visible_text(self, candidate: types.Candidate) -> str:
+        """Concatenate text parts that are NOT marked as thoughts.
+
+        Mirrors the filter used in `_process_content_parts` so that the streaming
+        path doesn't accidentally surface thought content. We avoid the SDK's
+        `response.text` convenience property here because its handling of
+        `part.thought` has varied across google-genai versions and across
+        third-party Gemini-compatible proxies.
+        """
+        if not candidate.content or not candidate.content.parts:
+            return ""
+        return "".join(
+            (p.text or "") for p in candidate.content.parts if p.text and not p.thought
+        )
+
     def _extract_usage(
         self, usage_metadata: types.GenerateContentResponseUsageMetadata
     ) -> TokenUsage:
@@ -539,7 +693,17 @@ class ProviderGoogleGenAI(Provider):
             # leak the model's internal reasoning into the user-facing message,
             # which also causes duplicate/triple replies on some platforms.
             if part.text and not part.thought:
-                chain.append(Comp.Plain(part.text))
+                # Some Gemini-compatible proxies wrap chain-of-thought in inline
+                # tags like `<thought>...</thought>` rather than setting
+                # `part.thought=True`. Strip those here too.
+                visible_text, leaked_thought = _strip_thought_tags(part.text)
+                if leaked_thought:
+                    existing = llm_response.reasoning_content
+                    llm_response.reasoning_content = (
+                        existing + ("\n\n" if existing else "") + leaked_thought
+                    )
+                if visible_text:
+                    chain.append(Comp.Plain(visible_text))
 
             if (
                 part.function_call
@@ -712,6 +876,7 @@ class ProviderGoogleGenAI(Provider):
         accumulated_text = ""
         accumulated_reasoning = ""
         final_response = None
+        thought_stripper = _ThoughtStreamStripper()
 
         async for chunk in result:
             llm_response = LLMResponse("assistant", is_chunk=True)
@@ -747,10 +912,20 @@ class ProviderGoogleGenAI(Provider):
                 _f = True
                 accumulated_reasoning += reasoning
                 llm_response.reasoning_content = reasoning
-            if chunk.text:
-                _f = True
-                accumulated_text += chunk.text
-                llm_response.result_chain = MessageChain(chain=[Comp.Plain(chunk.text)])
+            raw_visible = self._extract_visible_text(chunk.candidates[0])
+            if raw_visible:
+                visible_text, leaked_thought = thought_stripper.feed(raw_visible)
+                if leaked_thought:
+                    _f = True
+                    accumulated_reasoning += leaked_thought
+                    existing = llm_response.reasoning_content or ""
+                    llm_response.reasoning_content = existing + leaked_thought
+                if visible_text:
+                    _f = True
+                    accumulated_text += visible_text
+                    llm_response.result_chain = MessageChain(
+                        chain=[Comp.Plain(visible_text)],
+                    )
             if _f:
                 yield llm_response
 
@@ -768,6 +943,14 @@ class ProviderGoogleGenAI(Provider):
                     if chunk.usage_metadata:
                         final_response.usage = self._extract_usage(chunk.usage_metadata)
                 break
+
+        # Drain any text the stripper was holding back (e.g. trailing chars
+        # that turned out not to be a partial tag).
+        flushed_visible, flushed_thought = thought_stripper.flush()
+        if flushed_visible:
+            accumulated_text += flushed_visible
+        if flushed_thought:
+            accumulated_reasoning += flushed_thought
 
         # Yield final complete response with accumulated text
         if not final_response:
