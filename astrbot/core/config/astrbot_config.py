@@ -53,6 +53,9 @@ class AstrBotConfig(dict):
 
         if not self.check_exist():
             """不存在时载入默认配置"""
+            config_dir = os.path.dirname(os.path.abspath(config_path))
+            if config_dir:
+                os.makedirs(config_dir, exist_ok=True)
             with open(config_path, "w", encoding="utf-8-sig") as f:
                 json.dump(default_config, f, indent=4, ensure_ascii=False)
                 object.__setattr__(self, "first_deploy", True)  # 标记第一次部署

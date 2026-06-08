@@ -99,6 +99,12 @@ async def test_import_plugin_with_dependency_recovery_skips_internal_missing_mod
     async def mock_check_plugin_deps(*, target_plugin=None):
         events.append(("deps", target_plugin))
 
+    # 让恢复模式与"示例依赖(networkx)是否恰好已装"无关：plan=None 表示
+    # 无需安装 -> RECOVER_ON_FAILURE（不预加载），从而测试只验证恢复逻辑本身。
+    monkeypatch.setattr(
+        "astrbot.core.star.star_manager.plan_missing_requirements_install",
+        lambda requirements_path: None,
+    )
     monkeypatch.setattr("builtins.__import__", mock_import)
     monkeypatch.setattr(
         "astrbot.core.star.star_manager.pip_installer.prefer_installed_dependencies",
@@ -150,6 +156,12 @@ async def test_import_plugin_with_dependency_recovery_prefers_installed_external
     async def mock_check_plugin_deps(*, target_plugin=None):
         events.append(("deps", target_plugin))
 
+    # 让恢复模式与"示例依赖(networkx)是否恰好已装"无关：plan=None 表示
+    # 无需安装 -> RECOVER_ON_FAILURE（不预加载），从而测试只验证恢复逻辑本身。
+    monkeypatch.setattr(
+        "astrbot.core.star.star_manager.plan_missing_requirements_install",
+        lambda requirements_path: None,
+    )
     monkeypatch.setattr("builtins.__import__", mock_import)
     monkeypatch.setattr(
         "astrbot.core.star.star_manager.pip_installer.prefer_installed_dependencies",
@@ -201,6 +213,12 @@ async def test_import_plugin_with_dependency_recovery_does_not_treat_similar_pre
     async def mock_check_plugin_deps(*, target_plugin=None):
         events.append(("deps", target_plugin))
 
+    # 让恢复模式与"示例依赖(networkx)是否恰好已装"无关：plan=None 表示
+    # 无需安装 -> RECOVER_ON_FAILURE（不预加载），从而测试只验证恢复逻辑本身。
+    monkeypatch.setattr(
+        "astrbot.core.star.star_manager.plan_missing_requirements_install",
+        lambda requirements_path: None,
+    )
     monkeypatch.setattr("builtins.__import__", mock_import)
     monkeypatch.setattr(
         "astrbot.core.star.star_manager.pip_installer.prefer_installed_dependencies",

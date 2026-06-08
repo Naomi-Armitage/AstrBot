@@ -70,8 +70,13 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         path = parts.path.rstrip("/").removesuffix("/embeddings")
         if not path:
             path = "/v1"
-        elif not path.endswith("/v1") and not path.endswith("/v4"):
-            # /v4 is used by some OpenAI-compatible providers.
+        elif (
+            not path.endswith("/v1")
+            and not path.endswith("/v4")
+            and not path.endswith("/openai")
+        ):
+            # /v4 is used by some OpenAI-compatible providers;
+            # /openai is Gemini's OpenAI-compatible endpoint (e.g. /v1beta/openai).
             path = f"{path}/v1"
         return urlunsplit(parts._replace(path=path))
 
