@@ -8,7 +8,11 @@ from astrbot.core.config.default import VERSION
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
 from astrbot.core.db.migration.helper import check_migration_needed_v4, do_migration_v4
 from astrbot.core.updator import AstrBotUpdator
-from astrbot.core.utils.io import download_dashboard, get_dashboard_version
+from astrbot.core.utils.io import (
+    build_local_dashboard_dist,
+    download_dashboard,
+    get_dashboard_version,
+)
 
 from .route import Response, Route, RouteContext
 
@@ -199,6 +203,8 @@ class UpdateRoute(Route):
             proxy = proxy.removesuffix("/")
 
         self._init_update_progress(progress_id, version)
+        if self.astrbot_updator.is_source_git_install():
+            return await self._update_project_via_git(progress_id, reboot)
         try:
             self._set_update_stage(
                 progress_id,
@@ -320,8 +326,101 @@ class UpdateRoute(Route):
             logger.error(f"/api/update_project: {traceback.format_exc()}")
             return Response().error(e.__str__()).__dict__
 
+    async def _update_project_via_git(self, progress_id: str, reboot: bool):
+        """源码 + git 安装下的更新：git pull 当前分支远端 + 本地重建 WebUI。
+
+        不会下载官方代码/官方面板，因此不会覆盖你的 fork 与自定义 UI。
+        """
+        try:
+            # 1. 拉取代码（后端 + 前端源码）
+            self._set_update_stage(
+                progress_id, "core", "running", "正在 git pull 拉取最新代码...", 10
+            )
+            await self.astrbot_updator.update(latest=True, reboot=False)
+            self._set_update_stage(
+                progress_id, "core", "done", "代码已更新（git pull）。", 45
+            )
+
+            # 2. 从源码重建 WebUI（避免官方面板覆盖自定义 UI）
+            self._set_update_stage(
+                progress_id, "dashboard", "running", "正在从源码构建 WebUI...", 50
+            )
+            built = await build_local_dashboard_dist()
+            self._set_update_stage(
+                progress_id,
+                "dashboard",
+                "done",
+                "WebUI 已从源码重建。"
+                if built
+                else "已跳过 WebUI 构建（无 Node 工具链或失败），保留当前面板。",
+                75,
+            )
+
+            # 3. 更新依赖
+            self._set_update_stage(
+                progress_id, "dependencies", "running", "正在更新依赖...", 88
+            )
+            try:
+                await pip_installer.install(requirements_path="requirements.txt")
+            except Exception as e:
+                logger.error(f"更新依赖失败: {e}")
+            self._set_update_stage(
+                progress_id, "dependencies", "done", "依赖更新完成。", 96
+            )
+
+            if reboot:
+                self._set_update_stage(
+                    progress_id, "restart", "running", "更新成功，正在准备重启...", 98
+                )
+                await self.core_lifecycle.restart()
+                self.update_progress[progress_id].update(
+                    {
+                        "status": "success",
+                        "stage": "done",
+                        "message": "更新成功，AstrBot 将在 2 秒内全量重启以应用新的代码。",
+                        "overall_percent": 100,
+                    },
+                )
+                return (
+                    Response()
+                    .ok(None, "更新成功，AstrBot 将在 2 秒内全量重启以应用新的代码。")
+                    .__dict__,
+                    200,
+                    CLEAR_SITE_DATA_HEADERS,
+                )
+            self.update_progress[progress_id].update(
+                {
+                    "status": "success",
+                    "stage": "done",
+                    "message": "更新成功，AstrBot 将在下次启动时应用新的代码。",
+                    "overall_percent": 100,
+                },
+            )
+            return (
+                Response()
+                .ok(None, "更新成功，AstrBot 将在下次启动时应用新的代码。")
+                .__dict__,
+                200,
+                CLEAR_SITE_DATA_HEADERS,
+            )
+        except Exception as e:
+            self.update_progress[progress_id].update(
+                {"status": "error", "message": e.__str__()},
+            )
+            logger.error(f"/api/update_project (git): {traceback.format_exc()}")
+            return Response().error(e.__str__()).__dict__
+
     async def update_dashboard(self):
         try:
+            # 源码 + git 安装：从本地源码重建，绝不下载官方面板覆盖自定义 UI
+            if self.astrbot_updator.is_source_git_install():
+                built = await build_local_dashboard_dist()
+                msg = (
+                    "WebUI 已从源码重建。刷新页面即可应用。"
+                    if built
+                    else "未执行构建（无 Node 工具链或失败）；已保留当前面板，未下载官方版。"
+                )
+                return Response().ok(None, msg).__dict__, 200, CLEAR_SITE_DATA_HEADERS
             try:
                 await download_dashboard(version=f"v{VERSION}", latest=False)
             except Exception as e:

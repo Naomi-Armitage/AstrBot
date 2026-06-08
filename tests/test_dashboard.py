@@ -2612,6 +2612,10 @@ async def test_do_update(
         return
 
     monkeypatch.setattr(core_lifecycle_td.astrbot_updator, "update", mock_update)
+    # 本测试覆盖官方（非 git）更新流程，强制走官方路径
+    monkeypatch.setattr(
+        core_lifecycle_td.astrbot_updator, "is_source_git_install", lambda: False
+    )
     monkeypatch.setattr(
         "astrbot.dashboard.routes.update.download_dashboard",
         mock_download_dashboard,
@@ -2640,6 +2644,59 @@ async def test_do_update(
     assert progress_data["status"] == "ok"
     assert progress_data["data"]["status"] == "success"
     assert progress_data["data"]["overall_percent"] == 100
+
+
+@pytest.mark.asyncio
+async def test_do_update_git_mode_pulls_and_rebuilds(
+    app: Quart,
+    authenticated_header: dict,
+    core_lifecycle_td: AstrBotCoreLifecycle,
+    monkeypatch,
+):
+    """源码 + git 安装：/update/do 走 git pull + 本地重建，不下载官方版。"""
+    test_client = app.test_client()
+    calls = []
+
+    async def mock_update(*args, **kwargs):
+        del args, kwargs
+        calls.append("core")
+
+    async def mock_build_local(*args, **kwargs):
+        del args, kwargs
+        calls.append("dashboard")
+        return True
+
+    async def must_not_download(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("git 模式不应下载官方面板")
+
+    async def mock_pip_install(*args, **kwargs):
+        del args, kwargs
+
+    monkeypatch.setattr(
+        core_lifecycle_td.astrbot_updator, "is_source_git_install", lambda: True
+    )
+    monkeypatch.setattr(core_lifecycle_td.astrbot_updator, "update", mock_update)
+    monkeypatch.setattr(
+        "astrbot.dashboard.routes.update.build_local_dashboard_dist", mock_build_local
+    )
+    monkeypatch.setattr(
+        "astrbot.dashboard.routes.update.download_dashboard", must_not_download
+    )
+    monkeypatch.setattr(
+        "astrbot.dashboard.routes.update.pip_installer.install", mock_pip_install
+    )
+
+    response = await test_client.post(
+        "/api/update/do",
+        headers=authenticated_header,
+        json={"reboot": False, "progress_id": "git-progress"},
+    )
+    assert response.status_code == 200
+    data = await response.get_json()
+    assert data["status"] == "ok"
+    # git 模式顺序：先 git pull(core)，再本地重建(dashboard)
+    assert calls == ["core", "dashboard"]
 
 
 @pytest.mark.asyncio

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import time
@@ -127,6 +128,81 @@ class AstrBotUpdator(RepoZipUpdator):
             logger.error(f"重启失败（{executable}, {e}），请尝试手动重启。")
             raise e
 
+    def is_source_git_install(self) -> bool:
+        """当前是否为基于 git 的源码安装。
+
+        是则更新走 ``git pull``（拉取当前分支的远端，例如自建 fork），
+        否则回退官方 release zip 下载。
+        """
+        return os.path.exists(os.path.join(self.MAIN_PATH, ".git"))
+
+    async def _run_git(self, *args: str, timeout: float = 180.0) -> tuple[int, str, str]:
+        """在项目目录执行 git 命令，返回 (returncode, stdout, stderr)。"""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "-C",
+                self.MAIN_PATH,
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError as e:
+            raise Exception("未找到 git 可执行文件，无法以 git 模式更新。") from e
+        try:
+            out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except (TimeoutError, asyncio.TimeoutError) as e:
+            proc.kill()
+            raise Exception(f"git {' '.join(args)} 执行超时。") from e
+        return (
+            proc.returncode or 0,
+            out_b.decode("utf-8", "replace").strip(),
+            err_b.decode("utf-8", "replace").strip(),
+        )
+
+    async def _current_branch(self) -> str:
+        code, out, _ = await self._run_git(
+            "rev-parse", "--abbrev-ref", "HEAD", timeout=15
+        )
+        return out if code == 0 else ""
+
+    async def _update_via_git(self) -> str:
+        """以 git 方式更新：fetch + pull --ff-only（拉取当前分支的远端）。"""
+        branch = await self._current_branch()
+        logger.info(f"以 git 模式更新 AstrBot Core（分支：{branch or '未知'}）...")
+        code, out, err = await self._run_git("fetch", "--prune")
+        if code != 0:
+            raise Exception(f"git fetch 失败：{err or out}")
+        code, out, err = await self._run_git("pull", "--ff-only")
+        if code != 0:
+            raise Exception(
+                "git pull --ff-only 失败（本地可能有未提交改动，或与远端分叉无法快进）："
+                f"{err or out}"
+            )
+        logger.info(f"git 更新完成：{out}")
+        return out
+
+    async def _check_update_via_git(self) -> ReleaseInfo | None:
+        branch = await self._current_branch()
+        code, _, _ = await self._run_git("fetch", "--prune", timeout=60)
+        if code != 0:
+            return None
+        code, out, _ = await self._run_git(
+            "rev-list", "--count", "HEAD..@{u}", timeout=15
+        )
+        if code != 0 or not out.isdigit() or int(out) <= 0:
+            return None
+        behind = int(out)
+        _, head, _ = await self._run_git("rev-parse", "--short", "@{u}", timeout=15)
+        _, subject, _ = await self._run_git(
+            "log", "-1", "--pretty=%s", "@{u}", timeout=15
+        )
+        return ReleaseInfo(
+            version=f"{branch}@{head}",
+            published_at="",
+            body=f"git 分支 {branch} 落后远端 {behind} 个提交。最新：{subject}",
+        )
+
     async def check_update(
         self,
         url: str | None,
@@ -134,6 +210,8 @@ class AstrBotUpdator(RepoZipUpdator):
         consider_prerelease: bool = True,
     ) -> ReleaseInfo | None:
         """检查更新"""
+        if self.is_source_git_install():
+            return await self._check_update_via_git()
         return await super().check_update(
             self.ASTRBOT_RELEASE_API,
             VERSION,
@@ -151,13 +229,20 @@ class AstrBotUpdator(RepoZipUpdator):
         proxy="",
         progress_callback=None,
     ) -> None:
-        update_data = await self.fetch_release_info(self.ASTRBOT_RELEASE_API, latest)
-        file_url = None
-
         if os.environ.get("ASTRBOT_CLI") or os.environ.get("ASTRBOT_LAUNCHER"):
             raise Exception(
                 "Error: You are running AstrBot via CLI, please use `pip` or `uv tool upgrade` to update AstrBot."
             )  # 避免版本管理混乱
+
+        # 源码 + git 安装：直接拉取当前分支的远端（例如自建 fork），不下载官方 zip
+        if self.is_source_git_install():
+            await self._update_via_git()
+            if reboot:
+                self._reboot()
+            return
+
+        update_data = await self.fetch_release_info(self.ASTRBOT_RELEASE_API, latest)
+        file_url = None
 
         if latest:
             latest_version = update_data[0]["tag_name"]

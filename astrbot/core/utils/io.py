@@ -9,6 +9,7 @@ import ssl
 import time
 import uuid
 import zipfile
+import asyncio
 from pathlib import Path
 
 import aiohttp
@@ -389,6 +390,68 @@ async def get_dashboard_version():
     if bundled.exists():
         return _read_dashboard_dist_version(bundled)
     return None
+
+
+async def build_local_dashboard_dist(progress_callback=None) -> bool:
+    """从本地 dashboard/ 源码构建前端并部署到 data/dist。
+
+    用于 fork / 源码安装下的更新，避免下载官方面板覆盖自定义 WebUI。
+    成功返回 True；缺少 Node 工具链或构建失败时返回 False（不抛异常，
+    调用方据此保留现有 data/dist，绝不下载官方版覆盖）。
+    """
+    del progress_callback  # 预留接口，当前不上报细粒度进度
+    from astrbot.core.utils.astrbot_path import get_astrbot_path
+
+    dashboard_dir = Path(get_astrbot_path()) / "dashboard"
+    if not (dashboard_dir / "package.json").exists():
+        logger.warning("未找到 dashboard/ 源码，跳过本地前端构建。")
+        return False
+
+    pkg_mgr = shutil.which("pnpm") or shutil.which("npm")
+    if not pkg_mgr:
+        logger.warning("未找到 pnpm/npm，无法在本地构建前端；保留现有 data/dist。")
+        return False
+
+    async def _run(args: list[str], timeout: float) -> bool:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                cwd=str(dashboard_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            if proc.returncode != 0:
+                tail = out_b.decode("utf-8", "replace")[-2000:]
+                logger.error(f"前端构建命令失败 `{' '.join(args)}`:\n{tail}")
+                return False
+            return True
+        except (TimeoutError, asyncio.TimeoutError, FileNotFoundError, OSError) as e:
+            logger.error(f"前端构建命令异常 `{' '.join(args)}`: {e}")
+            return False
+
+    logger.info(f"使用 {pkg_mgr} 在本地构建 dashboard（可能耗时数分钟）...")
+    if not await _run([pkg_mgr, "install"], timeout=900):
+        return False
+    if not await _run([pkg_mgr, "run", "build"], timeout=900):
+        return False
+
+    dist_dir = dashboard_dir / "dist"
+    if not (dist_dir / "index.html").exists():
+        logger.error("前端构建完成但未找到 dist/index.html。")
+        return False
+
+    data_dist = Path(get_astrbot_data_path()) / "dist"
+    try:
+        if data_dist.exists():
+            shutil.rmtree(data_dist)
+        shutil.copytree(dist_dir, data_dist)
+    except OSError as e:
+        logger.error(f"复制构建产物到 {data_dist} 失败：{e}")
+        return False
+
+    logger.info(f"本地 dashboard 构建完成并已部署到 {data_dist}。")
+    return True
 
 
 async def download_dashboard(
