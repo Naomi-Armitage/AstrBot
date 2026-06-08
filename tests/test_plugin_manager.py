@@ -1473,7 +1473,7 @@ async def test_update_plugin_with_options_persists_custom_update_source(
     async def mock_global_put(key, value):
         state[key] = value
 
-    async def mock_update(plugin, proxy="", repo_url=None):
+    async def mock_update(plugin, proxy="", repo_url=None, download_url=""):
         events.append(("update", plugin.name, proxy, repo_url))
 
     monkeypatch.setattr("astrbot.core.star.star_manager.sp.global_get", mock_global_get)

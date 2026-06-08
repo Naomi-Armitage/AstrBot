@@ -581,7 +581,7 @@ def create_mock_updater_update(
         download_url: str = "",
     ) -> None:
         """Mock updater.update 方法。"""
-        del proxy, repo_url, download_url
+        del proxy, download_url
         plugin_dir = plugin_builder.get_plugin_path(plugin.name)
 
         # 创建更新标记文件

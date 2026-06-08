@@ -1958,7 +1958,7 @@ class PluginRoute(Route):
                 clear_persisted_update_source=clear_persisted_update_source,
             )
             # self.core_lifecycle.restart()
-            await self.plugin_manager.reload(plugin_name)
+            # 插件重载已在 update_plugin_with_options 内部完成，避免重复 reload
             await self._sync_skills_after_plugin_change()
             logger.info(f"更新插件 {plugin_name} 成功。")
             return Response().ok(None, "更新成功。").__dict__
