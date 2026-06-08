@@ -32,6 +32,7 @@ qq-botpy>=1.2.1
 python-socks>=2.8.0
 quart>=0.20.0
 silk-python>=0.2.6
+pilk>=0.2.4
 slack-sdk>=3.35.0
 sqlalchemy[asyncio]>=2.0.41
 sqlmodel>=0.0.24
