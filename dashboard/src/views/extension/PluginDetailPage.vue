@@ -10,7 +10,9 @@ import {
 import axios from "axios";
 import DOMPurify from "dompurify";
 import MarkdownIt from "markdown-it";
-import defaultPluginIcon from "@/assets/images/plugin_icon.png";
+import defaultPluginIcon from "/favicon.svg";
+import { pluginApi } from "@/api/v1";
+import { useI18n } from "@/i18n/composables";
 import { usePluginI18n } from "@/utils/pluginI18n";
 import PluginPlatformChip from "@/components/shared/PluginPlatformChip.vue";
 
@@ -34,6 +36,7 @@ const props = defineProps({
 });
 
 const { tm, router } = props.state;
+const { locale } = useI18n();
 const {
   pluginName,
   pluginDesc: resolvePluginDesc,
@@ -232,6 +235,29 @@ const supportPlatformsDisplay = computed(() => {
   return platforms.filter((platform) => typeof platform === "string");
 });
 
+const updatedAtDisplay = computed(() => {
+  if (!isMarketDetail.value) return "";
+
+  const value = firstPresentValue(
+    pluginData.value?.updated_at,
+    props.marketPlugin?.updated_at,
+  );
+  if (!value) return "";
+
+  const updatedAt = new Date(value);
+  if (Number.isNaN(updatedAt.getTime())) return "";
+
+  return new Intl.DateTimeFormat(locale.value, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(updatedAt);
+});
+
 const infoRows = computed(() => {
   const rows = [
     {
@@ -248,6 +274,11 @@ const infoRows = computed(() => {
     {
       label: tm("detail.info.stars"),
       value: starsDisplay.value,
+      optional: true,
+    },
+    {
+      label: tm("detail.info.updatedAt"),
+      value: updatedAtDisplay.value,
       optional: true,
     },
     {
@@ -334,7 +365,7 @@ const componentGroupIcons = {
   hook: "mdi-hook",
 };
 
-const getLegacyHandlerGroupKey = (handler) => {
+const getFallbackHandlerGroupKey = (handler) => {
   const type = String(handler?.type || "").trim();
   const eventType = String(handler?.event_type || "").trim();
   const eventTypeH = String(handler?.event_type_h || "").trim();
@@ -356,7 +387,7 @@ const getComponentGroupKey = (component) => {
     component?.type || component?.component_type || "",
   ).trim();
   if (componentGroupOrder.includes(type)) return type;
-  return getLegacyHandlerGroupKey(component);
+  return getFallbackHandlerGroupKey(component);
 };
 
 const normalizeComponent = (component, fallbackType = "") => {
@@ -394,7 +425,7 @@ const normalizeComponentList = (source) => {
 
   return normalizeHandlerList(source).map((handler) => ({
     ...handler,
-    type: getLegacyHandlerGroupKey(handler),
+    type: getFallbackHandlerGroupKey(handler),
   }));
 };
 
@@ -529,7 +560,12 @@ const openExternal = (url) => {
 };
 
 const goBack = () => {
-  router.push({ name: "Extensions", hash: `#${detailSourceTab.value}` });
+  router.push({
+    name:
+      detailSourceTab.value === "market"
+        ? "ExtensionMarketplace"
+        : "Extensions",
+  });
 };
 
 const renderMarkdown = (source) => {
@@ -575,9 +611,7 @@ const fetchPluginDetail = async () => {
   if (isMarketDetail.value || !props.plugin?.name) return;
 
   try {
-    const res = await axios.get("/api/plugin/detail", {
-      params: { name: props.plugin.name },
-    });
+    const res = await pluginApi.get(props.plugin.name);
     if (res.data.status === "ok" && res.data.data) {
       pluginDetail.value = res.data.data;
       await scrollToHashTarget();
@@ -651,9 +685,7 @@ const fetchReadme = async () => {
   }
 
   try {
-    const res = await axios.get("/api/plugin/readme", {
-      params: { name: plugin.name },
-    });
+    const res = await pluginApi.readme(plugin.name);
 
     if (res.data.status !== "ok") {
       readmeError.value = res.data.message || tm("messages.operationFailed");
@@ -707,9 +739,7 @@ const fetchChangelog = async () => {
   }
 
   try {
-    const res = await axios.get("/api/plugin/changelog", {
-      params: { name: plugin.name },
-    });
+    const res = await pluginApi.changelog(plugin.name);
 
     if (res.data.status !== "ok") {
       changelogError.value = res.data.message || tm("messages.operationFailed");
@@ -1040,7 +1070,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .plugin-detail-page {
   margin: 0 auto;
-  max-width: 1040px;
+  max-width: 1200px;
   padding: 16px 24px 32px;
   width: 100%;
 }

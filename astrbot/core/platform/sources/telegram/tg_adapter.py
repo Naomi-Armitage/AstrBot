@@ -1,5 +1,4 @@
 import asyncio
-import mimetypes
 import os
 import re
 import sys
@@ -11,7 +10,7 @@ from apscheduler.events import EVENT_JOB_ERROR
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import BotCommand, Update
 from telegram.constants import ChatType
-from telegram.error import BadRequest, Forbidden, InvalidToken, NetworkError
+from telegram.error import Forbidden, InvalidToken, NetworkError
 from telegram.ext import ApplicationBuilder, ContextTypes, ExtBot, filters
 from telegram.ext import MessageHandler as TelegramMessageHandler
 
@@ -20,6 +19,7 @@ from astrbot.api import logger
 from astrbot.api.event import MessageChain
 from astrbot.api.platform import (
     AstrBotMessage,
+    Group,
     MessageMember,
     MessageType,
     Platform,
@@ -33,7 +33,7 @@ from astrbot.core.star.star import star_map
 from astrbot.core.star.star_handler import star_handlers_registry
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 from astrbot.core.utils.io import download_file
-from astrbot.core.utils.media_utils import convert_audio_to_wav
+from astrbot.core.utils.media_utils import MediaResolver
 
 from .tg_event import TelegramPlatformEvent
 
@@ -45,6 +45,8 @@ else:
 
 @register_platform_adapter("telegram", "telegram 适配器")
 class TelegramPlatformAdapter(Platform):
+    _FORUM_TOPIC_NAME_CACHE_MAX_SIZE = 1000
+
     def __init__(
         self,
         platform_config: dict,
@@ -118,6 +120,7 @@ class TelegramPlatformAdapter(Platform):
         self._polling_recovery_threshold = 3
         self._polling_failure_window = 60.0
         self._application_started = False
+        self._forum_topic_names: dict[tuple[str, int | None], str] = {}
         self._build_application()
 
         # Media group handling
@@ -287,12 +290,19 @@ class TelegramPlatformAdapter(Platform):
                 await asyncio.sleep(self._polling_restart_delay)
 
     def _on_polling_error(self, error: Exception) -> None:
+        # Non-network errors (e.g. Conflict when two bot instances poll the
+        # same token) have a clear cause; log a concise message instead of a
+        # full traceback to avoid filling the log.
+        if not isinstance(error, NetworkError):
+            logger.error(
+                f"Telegram polling request failed: {type(error).__name__}: {error!s}"
+            )
+            return
+
         logger.error(
             f"Telegram polling request failed: {type(error).__name__}: {error!s}",
             exc_info=error,
         )
-        if not isinstance(error, NetworkError):
-            return
 
         if self._loop is None:
             return
@@ -437,45 +447,6 @@ class TelegramPlatformAdapter(Platform):
         if abm:
             await self.handle_msg(abm)
 
-    @staticmethod
-    def _append_caption_components(
-        message: AstrBotMessage,
-        caption: str | None,
-        caption_entities,
-    ) -> None:
-        if not caption:
-            return
-
-        message.message_str = caption
-        message.message.append(Comp.Plain(caption))
-        if not caption_entities:
-            return
-
-        for entity in caption_entities:
-            if entity.type != "mention":
-                continue
-            name = caption[entity.offset + 1 : entity.offset + entity.length]
-            message.message.append(Comp.At(qq=name, name=name))
-
-    @staticmethod
-    def _is_image_document(
-        document,
-        file_name: str,
-        file_path: str | None,
-    ) -> bool:
-        mime_type = str(getattr(document, "mime_type", "") or "").strip().lower()
-        if mime_type.startswith("image/"):
-            return True
-
-        for candidate in (file_name, file_path):
-            if not candidate:
-                continue
-            guessed_type, _ = mimetypes.guess_type(candidate)
-            if guessed_type and guessed_type.startswith("image/"):
-                return True
-
-        return False
-
     async def convert_message(
         self,
         update: Update,
@@ -514,11 +485,69 @@ class TelegramPlatformAdapter(Platform):
             message.type = MessageType.FRIEND_MESSAGE
         else:
             message.type = MessageType.GROUP_MESSAGE
-            message.group_id = str(update.message.chat.id)
-            if update.message.is_topic_message and update.message.message_thread_id:
+            chat_id = str(update.message.chat.id)
+            group_id = chat_id
+            is_forum = getattr(update.message.chat, "is_forum", False) is True
+            raw_thread_id = (
+                update.message.message_thread_id
+                if update.message.is_topic_message
+                else None
+            )
+            thread_id = (
+                raw_thread_id
+                if raw_thread_id and not (is_forum and raw_thread_id == 1)
+                else None
+            )
+            if thread_id is not None:
                 # Telegram Topic Group: include thread id to isolate per-topic sessions.
-                message.group_id += "#" + str(update.message.message_thread_id)
-                message.session_id = message.group_id
+                group_id += "#" + str(thread_id)
+                message.session_id = group_id
+
+            chat_title = getattr(update.message.chat, "title", None)
+            group_name = chat_title if isinstance(chat_title, str) else None
+            topic_name = None
+            topic_created = getattr(update.message, "forum_topic_created", None)
+            topic_edited = getattr(update.message, "forum_topic_edited", None)
+            discovered_topic_name = getattr(topic_created, "name", None)
+            if not isinstance(discovered_topic_name, str):
+                discovered_topic_name = getattr(topic_edited, "name", None)
+            if not isinstance(discovered_topic_name, str):
+                reply_message = update.message.reply_to_message
+                reply_topic_created = getattr(
+                    reply_message, "forum_topic_created", None
+                )
+                discovered_topic_name = getattr(reply_topic_created, "name", None)
+
+            topic_key = None
+            if thread_id is not None:
+                topic_key = (chat_id, thread_id)
+            elif is_forum:
+                topic_key = (chat_id, None)
+
+            if topic_key is not None:
+                cached_topic_name = self._forum_topic_names.pop(topic_key, None)
+                if (
+                    isinstance(discovered_topic_name, str)
+                    and discovered_topic_name.strip()
+                ):
+                    cached_topic_name = discovered_topic_name.strip()
+                if cached_topic_name:
+                    self._forum_topic_names[topic_key] = cached_topic_name
+                    if (
+                        len(self._forum_topic_names)
+                        > self._FORUM_TOPIC_NAME_CACHE_MAX_SIZE
+                    ):
+                        oldest_topic_key = next(iter(self._forum_topic_names))
+                        del self._forum_topic_names[oldest_topic_key]
+                topic_name = cached_topic_name
+
+            if group_name and topic_name:
+                group_name = f"{group_name}-{topic_name}"
+            message.group = Group(
+                group_id=group_id,
+                group_name=group_name,
+            )
+            message._telegram_topic_name = topic_name
         message.message_id = str(update.message.message_id)
         _from_user = update.message.from_user
         if not _from_user:
@@ -546,15 +575,22 @@ class TelegramPlatformAdapter(Platform):
             reply_abm = await self.convert_message(reply_update, context, False)
 
             if reply_abm:
+                quote_text = update.message.quote.text if update.message.quote else None
+                reply_chain = reply_abm.message
+                reply_message_str = reply_abm.message_str
+                if quote_text:
+                    reply_chain = [Comp.Plain(quote_text)]
+                    reply_message_str = quote_text
+
                 message.message.append(
                     Comp.Reply(
                         id=reply_abm.message_id,
-                        chain=reply_abm.message,
+                        chain=reply_chain,
                         sender_id=reply_abm.sender.user_id,
                         sender_nickname=reply_abm.sender.nickname,
                         time=reply_abm.timestamp,
-                        message_str=reply_abm.message_str,
-                        text=reply_abm.message_str,
+                        message_str=reply_message_str,
+                        text=reply_message_str,
                         qq=reply_abm.sender.user_id,
                     ),
                 )
@@ -569,10 +605,8 @@ class TelegramPlatformAdapter(Platform):
                 and update.message.reply_to_message.from_user
                 and update.message.reply_to_message.from_user.id == context.bot.id
             ):
-                # Keep slash commands untouched when replying to bot messages,
-                # otherwise wake-prefix stripping can break command matching.
-                if not plain_text.lstrip().startswith("/"):
-                    plain_text = f"/@{context.bot.username} {plain_text}"
+                plain_text2 = f"/@{context.bot.username} " + plain_text
+                plain_text = plain_text2
 
             # 群聊场景命令特殊处理
             if plain_text.startswith("/"):
@@ -607,106 +641,81 @@ class TelegramPlatformAdapter(Platform):
                 return None
 
         elif update.message.voice:
-            file = await self._safe_get_telegram_file(
-                update.message.voice.get_file,
-                "voice",
-            )
-            if file is None:
-                fallback_text = "[Voice: File is too big]"
-                message.message_str = fallback_text
-                message.message.append(Comp.Plain(fallback_text))
-                return message
+            file = await update.message.voice.get_file()
 
             file_basename = os.path.basename(cast(str, file.file_path))
             temp_dir = get_astrbot_temp_path()
             temp_path = os.path.join(temp_dir, file_basename)
             await download_file(cast(str, file.file_path), path=temp_path)
-            path_wav = os.path.join(
-                temp_dir,
-                f"{file_basename}.wav",
-            )
-            path_wav = await convert_audio_to_wav(temp_path, path_wav)
+            path_wav = await MediaResolver(
+                temp_path,
+                media_type="audio",
+                default_suffix=".wav",
+            ).to_path(target_format="wav")
 
             record = Comp.Record(file=path_wav, url=path_wav)
             record.path = path_wav
             message.message = [record]
 
+        elif update.message.audio:
+            # Audio files use their own Bot API field and do not fall back to document.
+            file = await update.message.audio.get_file()
+
+            file_basename = os.path.basename(cast(str, file.file_path))
+            temp_dir = get_astrbot_temp_path()
+            temp_path = os.path.join(temp_dir, file_basename)
+            await download_file(cast(str, file.file_path), path=temp_path)
+            path_wav = await MediaResolver(
+                temp_path,
+                media_type="audio",
+                default_suffix=".wav",
+            ).to_path(target_format="wav")
+
+            record = Comp.Record(file=path_wav, url=path_wav)
+            record.path = path_wav
+            message.message.append(record)
+            _apply_caption()
+
         elif update.message.photo:
             photo = update.message.photo[-1]  # get the largest photo
-            file = await self._safe_get_telegram_file(photo.get_file, "photo")
-            if file is not None:
-                message.message.append(
-                    Comp.Image(file=file.file_path, url=file.file_path)
-                )
-            else:
-                message.message.append(Comp.Plain("[Image: File is too big]"))
-            self._append_caption_components(
-                message,
-                update.message.caption,
-                update.message.caption_entities,
-            )
+            file = await photo.get_file()
+            message.message.append(Comp.Image(file=file.file_path, url=file.file_path))
+            _apply_caption()
 
         elif update.message.sticker:
             # 将sticker当作图片处理
-            file = await self._safe_get_telegram_file(
-                update.message.sticker.get_file,
-                "sticker",
-            )
-            if file is not None:
+            sticker = update.message.sticker
+            if sticker.is_animated or sticker.is_video:
+                # .tgs/.webm stickers are not bitmaps; use the static thumbnail.
+                file = await sticker.thumbnail.get_file() if sticker.thumbnail else None
+            else:
+                file = await sticker.get_file()
+            if file:
                 message.message.append(
                     Comp.Image(file=file.file_path, url=file.file_path)
                 )
-            else:
-                message.message.append(Comp.Plain("[Sticker: File is too big]"))
-            if update.message.sticker.emoji:
-                sticker_text = f"Sticker: {update.message.sticker.emoji}"
+            if sticker.emoji:
+                sticker_text = f"Sticker: {sticker.emoji}"
                 message.message_str = sticker_text
                 message.message.append(Comp.Plain(sticker_text))
 
         elif update.message.document:
+            file = await update.message.document.get_file()
             file_name = update.message.document.file_name or uuid.uuid4().hex
-            file = await self._safe_get_telegram_file(
-                update.message.document.get_file,
-                "document",
-            )
-            if file is None:
-                fallback_text = f"[Document: {file_name} (File is too big)]"
-                message.message_str = fallback_text
-                message.message.append(Comp.Plain(fallback_text))
-                return message
             file_path = file.file_path
             if file_path is None:
                 logger.warning(
                     f"Telegram document file_path is None, cannot save the file {file_name}.",
                 )
             else:
-                component = (
-                    Comp.Image(file=file_path, url=file_path)
-                    if self._is_image_document(
-                        update.message.document,
-                        file_name,
-                        file_path,
-                    )
-                    else Comp.File(file=file_path, name=file_name, url=file_path)
+                message.message.append(
+                    Comp.File(file=file_path, name=file_name, url=file_path)
                 )
-                message.message.append(component)
-            self._append_caption_components(
-                message,
-                update.message.caption,
-                update.message.caption_entities,
-            )
+                _apply_caption()
 
         elif update.message.video:
+            file = await update.message.video.get_file()
             file_name = update.message.video.file_name or uuid.uuid4().hex
-            file = await self._safe_get_telegram_file(
-                update.message.video.get_file,
-                "video",
-            )
-            if file is None:
-                fallback_text = f"[Video: {file_name} (File is too big)]"
-                message.message_str = fallback_text
-                message.message.append(Comp.Plain(fallback_text))
-                return message
             file_path = file.file_path
             if file_path is None:
                 logger.warning(
@@ -716,22 +725,18 @@ class TelegramPlatformAdapter(Platform):
                 message.message.append(Comp.Video(file=file_path, path=file.file_path))
                 _apply_caption()
 
-        return message
-
-    async def _safe_get_telegram_file(self, get_file_coro, media_type: str):
-        """Get Telegram file metadata safely for oversized media payloads."""
-        try:
-            return await get_file_coro()
-        except BadRequest as exc:
-            err_msg = (getattr(exc, "message", None) or str(exc)).lower()
-            if "file is too big" in err_msg:
+        elif update.message.video_note:
+            # Video notes carry no file_name and cannot have a caption.
+            file = await update.message.video_note.get_file()
+            file_path = file.file_path
+            if file_path is None:
                 logger.warning(
-                    "Telegram %s is too large to fetch via get_file; "
-                    "falling back to text-only placeholder.",
-                    media_type,
+                    "Telegram video note file_path is None, cannot save the file.",
                 )
-                return None
-            raise
+            else:
+                message.message.append(Comp.Video(file=file_path, path=file_path))
+
+        return message
 
     async def handle_media_group_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -845,15 +850,25 @@ class TelegramPlatformAdapter(Platform):
                 f"Failed to process media group {media_group_id}", exc_info=True
             )
 
-    async def handle_msg(self, message: AstrBotMessage) -> None:
-        message_event = TelegramPlatformEvent(
+    def create_event(self, message: AstrBotMessage) -> TelegramPlatformEvent:
+        """Creates a Telegram message event.
+
+        Args:
+            message: AstrBot message object to wrap.
+
+        Returns:
+            Created Telegram message event.
+        """
+        return TelegramPlatformEvent(
             message_str=message.message_str,
             message_obj=message,
             platform_meta=self.meta(),
             session_id=message.session_id,
             client=self.client,
         )
-        self.commit_event(message_event)
+
+    async def handle_msg(self, message: AstrBotMessage) -> None:
+        self.commit_event(self.create_event(message))
 
     def get_client(self) -> ExtBot:
         return self.client

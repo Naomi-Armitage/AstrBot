@@ -26,6 +26,7 @@ from astrbot.core.platform.astr_message_event import MessageSesion
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 from astrbot.core.utils.io import download_file
 from astrbot.core.utils.media_utils import (
+    MediaResolver,
     convert_audio_format,
     convert_video_format,
     extract_video_cover,
@@ -181,13 +182,18 @@ class DingtalkPlatformAdapter(Platform):
         abm.message_id = cast(str, message.message_id)
         abm.raw_message = message
 
+        leading_at_is_self = False
         if abm.type == MessageType.GROUP_MESSAGE:
             # 处理所有被 @ 的用户（包括机器人自己，因 at_users 已包含）
             if message.at_users:
-                for user in message.at_users:
+                for index, user in enumerate(message.at_users):
                     if id := self._id_to_sid(user.dingtalk_id):
                         abm.message.append(At(qq=id))
+                        if index == 0 and id == abm.self_id:
+                            leading_at_is_self = True
             abm.group_id = message.conversation_id
+            if abm.group:
+                abm.group.group_name = message.conversation_title
             abm.session_id = abm.group_id
         else:
             abm.session_id = abm.sender.user_id
@@ -231,10 +237,18 @@ class DingtalkPlatformAdapter(Platform):
                 )
                 contents: list[dict] = cast(list[dict], rtc.rich_text_list)
                 plain_parts: list[str] = []
-                for content in contents:
+                for index, content in enumerate(contents):
                     if "text" in content:
                         plain_text = cast(str, content.get("text") or "")
                         if plain_text:
+                            # HarmonyOS repeats the leading bot mention as a text
+                            # segment even though atUsers already represents it.
+                            if (
+                                index == 0
+                                and leading_at_is_self
+                                and plain_text.lstrip().startswith("@")
+                            ):
+                                continue
                             plain_parts.append(plain_text)
                             abm.message.append(Plain(plain_text))
                     elif "type" in content and content["type"] == "picture":
@@ -274,7 +288,12 @@ class DingtalkPlatformAdapter(Platform):
                         voice_ext,
                     )
                     if f_path:
-                        abm.message.append(Record.fromFileSystem(f_path))
+                        path_wav = await MediaResolver(
+                            f_path,
+                            media_type="audio",
+                            default_suffix=".wav",
+                        ).to_path(target_format="wav")
+                        abm.message.append(Record(file=path_wav, url=path_wav))
             case "file":
                 download_code = cast(str, raw_content.get("downloadCode") or "")
                 if not download_code:
@@ -571,13 +590,17 @@ class DingtalkPlatformAdapter(Platform):
                 text = segment.text.strip()
                 if not text and not at_str:
                     continue
-                await send_message(
-                    msg_key="sampleMarkdown",
-                    msg_param={
-                        "title": "AstrBot",
-                        "text": f"{at_str} {text}".strip(),
-                    },
-                )
+                text = f"{at_str} {text}".strip()
+                if message_chain.use_markdown_ is False:
+                    await send_message(
+                        msg_key="sampleText",
+                        msg_param={"content": text},
+                    )
+                else:
+                    await send_message(
+                        msg_key="sampleMarkdown",
+                        msg_param={"title": "AstrBot", "text": text},
+                    )
             elif isinstance(segment, Image):
                 photo_url = segment.file or segment.url or ""
                 if photo_url.startswith(("http://", "https://")):
@@ -747,17 +770,26 @@ class DingtalkPlatformAdapter(Platform):
                 # at_str=at_str,
             )
 
-    async def handle_msg(self, abm: AstrBotMessage) -> None:
-        event = DingtalkMessageEvent(
-            message_str=abm.message_str,
-            message_obj=abm,
+    def create_event(self, message: AstrBotMessage) -> DingtalkMessageEvent:
+        """Creates a Dingtalk message event.
+
+        Args:
+            message: AstrBot message object to wrap.
+
+        Returns:
+            Created Dingtalk message event.
+        """
+        return DingtalkMessageEvent(
+            message_str=message.message_str,
+            message_obj=message,
             platform_meta=self.meta(),
-            session_id=abm.session_id,
+            session_id=message.session_id,
             client=self.client,
             adapter=self,
         )
 
-        self._event_queue.put_nowait(event)
+    async def handle_msg(self, abm: AstrBotMessage) -> None:
+        self.commit_event(self.create_event(abm))
 
     async def run(self) -> None:
         # await self.client_.start()

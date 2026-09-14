@@ -1,15 +1,14 @@
 <script setup lang="ts">
 import { RouterView, useRoute } from "vue-router";
 import { ref, onMounted, computed, watch } from "vue";
-import axios from "axios";
 import VerticalSidebarVue from "./vertical-sidebar/VerticalSidebar.vue";
 import VerticalHeaderVue from "./vertical-header/VerticalHeader.vue";
-import MigrationDialog from "@/components/shared/MigrationDialog.vue";
 import ReadmeDialog from "@/components/shared/ReadmeDialog.vue";
 import Chat from "@/components/chat/Chat.vue";
 import { useCustomizerStore } from "@/stores/customizer";
 import { useRouterLoadingStore } from "@/stores/routerLoading";
 import { useCommonStore } from "@/stores/common";
+import { statsApi } from "@/api/v1";
 import { useI18n } from "@/i18n/composables";
 
 const FIRST_NOTICE_SEEN_KEY = "astrbot:first_notice_seen:v1";
@@ -25,6 +24,14 @@ const isCurrentChatRoute = computed(
 const isPluginPageRoute = computed(
   () => route.path.startsWith("/plugin-page/"),
 );
+const isProviderPageRoute = computed(() => route.path === "/providers");
+const isPlatformPageRoute = computed(() => route.path === "/platforms");
+const isViewportLockedRoute = computed(
+  () =>
+    isCurrentChatRoute.value ||
+    isProviderPageRoute.value ||
+    isPlatformPageRoute.value,
+);
 const isFullScreenRoute = computed(
   () => isCurrentChatRoute.value || isPluginPageRoute.value,
 );
@@ -32,7 +39,6 @@ const shouldMountChat = ref(isCurrentChatRoute.value);
 
 const showSidebar = computed(() => !isCurrentChatRoute.value);
 
-const migrationDialog = ref<InstanceType<typeof MigrationDialog> | null>(null);
 const showFirstNoticeDialog = ref(false);
 
 watch(isCurrentChatRoute, (isChatRoute) => {
@@ -41,43 +47,13 @@ watch(isCurrentChatRoute, (isChatRoute) => {
   }
 });
 
-const checkMigration = async (): Promise<boolean> => {
-  try {
-    const response = await axios.get("/api/stat/version");
-    if (response.data.status === "ok") {
-      commonStore.setAstrBotVersion(
-        response.data.data?.version,
-        response.data.data?.dashboard_version,
-      );
-    }
-    if (response.data.status === "ok" && response.data.data.need_migration) {
-      if (
-        migrationDialog.value &&
-        typeof migrationDialog.value.open === "function"
-      ) {
-        const result = await migrationDialog.value.open();
-        if (result.success) {
-          console.log("Migration completed successfully:", result.message);
-          window.location.reload();
-        }
-      }
-      return true;
-    }
-  } catch (error) {
-    console.error("Failed to check migration status:", error);
-  }
-  return false;
-};
-
 const maybeShowFirstNotice = async () => {
   if (localStorage.getItem(FIRST_NOTICE_SEEN_KEY) === "1") {
     return;
   }
 
   try {
-    const response = await axios.get("/api/stat/first-notice", {
-      params: { locale: locale.value },
-    });
+    const response = await statsApi.firstNotice(locale.value);
     if (response.data.status !== "ok") {
       return;
     }
@@ -103,10 +79,18 @@ const onFirstNoticeDialogUpdate = (visible: boolean) => {
 
 onMounted(() => {
   setTimeout(async () => {
-    const migrationPending = await checkMigration();
-    if (!migrationPending) {
-      await maybeShowFirstNotice();
+    try {
+      const response = await statsApi.version();
+      if (response.data.status === "ok") {
+        commonStore.setAstrBotVersion(
+          response.data.data?.version,
+          response.data.data?.dashboard_version,
+        );
+      }
+    } catch (error) {
+      console.error("Failed to load version info:", error);
     }
+    await maybeShowFirstNotice();
   }, 1000);
 });
 </script>
@@ -133,26 +117,37 @@ onMounted(() => {
       <VerticalHeaderVue />
       <VerticalSidebarVue v-if="showSidebar" />
       <v-main
+        :class="{ 'chat-main': isCurrentChatRoute }"
         :style="{
-          height: isCurrentChatRoute ? 'calc(100vh - 55px)' : undefined,
-          overflow: isCurrentChatRoute ? 'hidden' : undefined,
+          height: isViewportLockedRoute ? '100vh' : undefined,
+          overflow: isViewportLockedRoute ? 'hidden' : undefined,
         }"
       >
         <v-container
           fluid
           class="page-wrapper"
-          :class="{ 'chat-mode-container': isCurrentChatRoute }"
+          :class="{
+            'chat-mode-container': isCurrentChatRoute,
+            'viewport-locked-container':
+              isProviderPageRoute || isPlatformPageRoute,
+          }"
           :style="{
-            height: isFullScreenRoute ? '100%' : 'calc(100% - 8px)',
+            height:
+              isFullScreenRoute || isProviderPageRoute || isPlatformPageRoute
+                ? '100%'
+                : 'calc(100% - 8px)',
             padding: isFullScreenRoute ? '0' : undefined,
-            minHeight: isFullScreenRoute ? 'unset' : undefined,
+            minHeight:
+              isFullScreenRoute || isProviderPageRoute || isPlatformPageRoute
+                ? 'unset'
+                : undefined,
           }"
         >
           <div
             :style="{
               height: '100%',
               width: '100%',
-              overflow: isCurrentChatRoute ? 'hidden' : undefined,
+              overflow: isViewportLockedRoute ? 'hidden' : undefined,
               position: isPluginPageRoute ? 'relative' : undefined,
             }"
           >
@@ -168,7 +163,6 @@ onMounted(() => {
         </v-container>
       </v-main>
 
-      <MigrationDialog ref="migrationDialog" />
       <ReadmeDialog
         :show="showFirstNoticeDialog"
         mode="first-notice"
@@ -183,5 +177,15 @@ onMounted(() => {
   min-height: unset !important;
   height: 100% !important;
   overflow: hidden !important;
+}
+
+.viewport-locked-container {
+  min-height: unset !important;
+  height: 100% !important;
+  overflow: hidden !important;
+}
+
+.chat-main {
+  padding-top: 0 !important;
 }
 </style>

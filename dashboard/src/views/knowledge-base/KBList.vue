@@ -5,6 +5,15 @@
       <p class="mt-4 text-medium-emphasis">{{ t('list.loading') }}</p>
     </div>
 
+    <div v-else-if="loadError && kbList.length === 0" class="empty-state">
+      <v-icon size="72" color="error">mdi-alert-circle-outline</v-icon>
+      <h2 class="mt-4">{{ t('messages.loadError') }}</h2>
+      <v-btn class="mt-6" prepend-icon="mdi-refresh" color="primary" variant="tonal"
+        @click="loadKnowledgeBases()">
+        {{ t('list.retry') }}
+      </v-btn>
+    </div>
+
     <div v-else-if="kbList.length > 0" class="kb-list">
       <OutlinedActionListItem
         v-for="kb in kbList"
@@ -29,7 +38,7 @@
         </template>
 
         <div v-if="!kb.init_error" class="kb-description text-body-2 text-medium-emphasis">
-          {{ kb.description || '暂无描述' }}
+          {{ kb.description || t('list.noDescription') }}
         </div>
 
         <div v-if="kb.init_error" class="kb-error-panel">
@@ -79,6 +88,15 @@
           </v-tooltip>
         </template>
       </OutlinedActionListItem>
+
+      <v-pagination
+        v-if="total > pageSize"
+        v-model="page"
+        :length="Math.ceil(total / pageSize)"
+        :total-visible="7"
+        class="mt-4"
+        @update:model-value="loadKnowledgeBases()"
+      />
     </div>
 
     <!-- 空状态 -->
@@ -124,8 +142,8 @@
     <!-- 创建/编辑对话框 -->
     <v-dialog v-model="showCreateDialog" max-width="600px" persistent>
       <v-card>
-        <v-card-title class="d-flex align-center">
-          <span class="text-h5">{{ editingKB ? t('edit.title') : t('create.title') }}</span>
+        <v-card-title class="text-h3 pa-4 pb-0 pl-6 d-flex align-center">
+          <span>{{ editingKB ? t('edit.title') : t('create.title') }}</span>
           <v-spacer />
           <v-btn icon="mdi-close" variant="text" @click="closeCreateDialog" />
         </v-card-title>
@@ -145,14 +163,16 @@
           <v-form ref="formRef" @submit.prevent="submitForm">
             <v-text-field v-model="formData.kb_name" :label="t('create.nameLabel')"
               :placeholder="t('create.namePlaceholder')" variant="outlined"
-              :rules="[v => !!v || t('create.nameRequired')]" required class="mb-4" hint="后续如修改知识库名称，需重新在配置文件更新。" persistent-hint />
+              :rules="[v => !!v || t('create.nameRequired')]" required class="mb-4" :hint="t('create.nameChangeHint')" persistent-hint />
 
             <v-textarea v-model="formData.description" :label="t('create.descriptionLabel')"
               :placeholder="t('create.descriptionPlaceholder')" variant="outlined" rows="3" class="mb-4" />
 
             <v-select v-model="formData.embedding_provider_id" :items="embeddingProviders"
               :item-title="item => item.embedding_model || item.id" :item-value="'id'"
-              :label="t('create.embeddingModelLabel')" variant="outlined" class="mb-4" :disabled="editingKB !== null" hint="嵌入模型选择后无法修改，如需更换请创建新的知识库。" persistent-hint>
+              :label="t('create.embeddingModelLabel')" variant="outlined" class="mb-4" :disabled="editingKB !== null"
+              :rules="[v => editingKB !== null || !!v || t('create.embeddingModelRequired')]" required
+              :hint="t('create.embeddingLockedHint')" persistent-hint>
               <template #item="{ props, item }">
                 <v-list-item v-bind="props">
                   <template #subtitle>
@@ -186,7 +206,7 @@
           <v-btn variant="text" @click="closeCreateDialog">
             {{ t('create.cancel') }}
           </v-btn>
-          <v-btn color="primary" variant="elevated" @click="submitForm" :loading="saving">
+          <v-btn color="primary" variant="tonal" @click="submitForm" :loading="saving">
             {{ editingKB ? t('edit.submit') : t('create.submit') }}
           </v-btn>
         </v-card-actions>
@@ -196,7 +216,7 @@
     <!-- Emoji 选择器对话框 -->
     <v-dialog v-model="showEmojiPicker" max-width="500px">
       <v-card>
-        <v-card-title class="pa-4">{{ t('emoji.title') }}</v-card-title>
+        <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{ t('emoji.title') }}</v-card-title>
         <v-divider />
         <v-card-text class="pa-4">
           <div v-for="category in emojiCategories" :key="category.key" class="mb-4">
@@ -221,7 +241,7 @@
     <!-- 删除确认对话框 -->
     <v-dialog v-model="showDeleteDialog" max-width="450px" persistent>
       <v-card>
-        <v-card-title class="pa-4 text-h6">{{ t('delete.title') }}</v-card-title>
+        <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{ t('delete.title') }}</v-card-title>
         <v-divider />
         <v-card-text class="pa-6">
           <p>{{ t('delete.confirmText', { name: deleteTarget?.kb_name || '' }) }}</p>
@@ -235,7 +255,7 @@
           <v-btn variant="text" @click="cancelDelete">
             {{ t('delete.cancel') }}
           </v-btn>
-          <v-btn color="error" variant="elevated" @click="deleteKB" :loading="deleting">
+          <v-btn color="error" variant="tonal" @click="deleteKB" :loading="deleting">
             {{ t('delete.confirm') }}
           </v-btn>
         </v-card-actions>
@@ -248,7 +268,7 @@
     </v-snackbar>
 
     <div class="position-absolute" style="bottom: 0px; right: 16px;">
-      <small @click="router.push('/alkaid/knowledge-base')"><a style="text-decoration: underline; cursor: pointer;">切换到旧版知识库</a></small>
+      <small @click="router.push('/alkaid/knowledge-base')"><a style="text-decoration: underline; cursor: pointer;">{{ t('list.switchLegacy') }}</a></small>
     </div>
 
   </div>
@@ -257,7 +277,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import axios from 'axios'
+import { knowledgeApi, providerApi } from '@/api/v1'
 import { useModuleI18n } from '@/i18n/composables'
 import OutlinedActionListItem from '@/components/shared/OutlinedActionListItem.vue'
 
@@ -266,9 +286,13 @@ const router = useRouter()
 
 // 状态
 const loading = ref(false)
+const loadError = ref(false)
 const saving = ref(false)
 const deleting = ref(false)
 const kbList = ref<any[]>([])
+const page = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
 const embeddingProviders = ref<any[]>([])
 const rerankProviders = ref<any[]>([])
 const originalEmbeddingProvider = ref<string | null>(null)
@@ -323,20 +347,28 @@ const emojiCategories = [
 // 加载知识库列表
 const loadKnowledgeBases = async (refreshStats = false) => {
   loading.value = true
+  loadError.value = false
   try {
-    const params: any = {}
     if (refreshStats) {
-      params.refresh_stats = 'true'
+      page.value = 1
     }
-
-    const response = await axios.get('/api/kb/list', { params })
+    const response = await knowledgeApi.list({
+      page: page.value,
+      page_size: pageSize.value,
+      refresh_stats: refreshStats
+    })
     if (response.data.status === 'ok') {
-      kbList.value = response.data.data.items || []
+      const data = response.data.data
+      kbList.value = data.items || []
+      total.value = data.total || 0
+      loadError.value = false
     } else {
+      loadError.value = true
       showSnackbar(response.data.message || t('messages.loadError'), 'error')
     }
   } catch (error) {
     console.error('Failed to load knowledge bases:', error)
+    loadError.value = true
     showSnackbar(t('messages.loadError'), 'error')
   } finally {
     loading.value = false
@@ -346,9 +378,7 @@ const loadKnowledgeBases = async (refreshStats = false) => {
 // 加载提供商配置
 const loadProviders = async () => {
   try {
-    const response = await axios.get('/api/config/provider/list', {
-      params: { provider_type: 'embedding,rerank' }
-    })
+    const response = await providerApi.listByProviderType('embedding,rerank')
     if (response.data.status === 'ok') {
       embeddingProviders.value = response.data.data.filter(
         (p: any) => p.provider_type === 'embedding'
@@ -399,15 +429,15 @@ const deleteKB = async () => {
 
   deleting.value = true
   try {
-    const response = await axios.post('/api/kb/delete', {
-      kb_id: deleteTarget.value.kb_id
-    })
+    const response = await knowledgeApi.delete(deleteTarget.value.kb_id)
 
     console.log('Delete response:', response.data) // 调试日志
 
     if (response.data.status === 'ok') {
       showSnackbar(t('messages.deleteSuccess'))
-      // 先刷新列表，再关闭对话框
+      if (kbList.value.length === 1 && page.value > 1) {
+        page.value -= 1
+      }
       await loadKnowledgeBases()
       showDeleteDialog.value = false
       deleteTarget.value = null
@@ -439,12 +469,12 @@ const submitForm = async () => {
 
     let response
     if (editingKB.value) {
-      response = await axios.post('/api/kb/update', {
-        kb_id: editingKB.value.kb_id,
-        ...payload
-      })
+      response = await knowledgeApi.update(editingKB.value.kb_id, payload)
     } else {
-      response = await axios.post('/api/kb/create', payload)
+      response = await knowledgeApi.create({
+        ...payload,
+        embedding_provider_id: formData.value.embedding_provider_id!
+      })
     }
 
     if (response.data.status === 'ok') {

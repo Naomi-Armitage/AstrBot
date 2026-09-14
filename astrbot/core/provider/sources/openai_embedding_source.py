@@ -1,4 +1,4 @@
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
 from openai import AsyncOpenAI
@@ -8,6 +8,31 @@ from astrbot import logger
 from ..entities import ProviderType
 from ..provider import EmbeddingProvider
 from ..register import register_provider_adapter
+
+
+def _normalize_api_base(api_base: str | None) -> str:
+    """Normalize embedding API base URL to ensure proper endpoint path.
+
+    Handles various endpoint formats and ensures compatibility with
+    OpenAI-compatible providers that use /v1, /v4, or /openai paths.
+    """
+    normalized = str(api_base or "").strip()
+    if not normalized:
+        return "https://api.openai.com/v1"
+
+    parts = urlsplit(normalized)
+    path = parts.path.rstrip("/").removesuffix("/embeddings")
+    if not path:
+        path = "/v1"
+    elif (
+        not path.endswith("/v1")
+        and not path.endswith("/v4")
+        and not path.endswith("/openai")
+    ):
+        # /v4 is used by some OpenAI-compatible providers;
+        # /openai is Gemini's OpenAI-compatible endpoint (e.g. /v1beta/openai).
+        path = f"{path}/v1"
+    return urlunsplit(parts._replace(path=path))
 
 
 @register_provider_adapter(
@@ -26,11 +51,12 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         if proxy:
             logger.info(f"[OpenAI Embedding] {provider_id} Using proxy: {proxy}")
             http_client = httpx.AsyncClient(proxy=proxy)
-        api_base = self._normalize_api_base(
+        api_base = _normalize_api_base(
             provider_config.get("embedding_api_base", "https://api.openai.com/v1")
         )
         logger.info(f"[OpenAI Embedding] {provider_id} Using API Base: {api_base}")
         self.client = AsyncOpenAI(
+            default_headers=self.request_headers,
             api_key=provider_config.get("embedding_api_key"),
             base_url=api_base,
             timeout=int(provider_config.get("timeout", 20)),
@@ -60,26 +86,6 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         data = self._extract_embedding_data(embeddings)
         return [item.embedding for item in data]
 
-    @staticmethod
-    def _normalize_api_base(api_base: str | None) -> str:
-        normalized = str(api_base or "").strip()
-        if not normalized:
-            return "https://api.openai.com/v1"
-
-        parts = urlsplit(normalized)
-        path = parts.path.rstrip("/").removesuffix("/embeddings")
-        if not path:
-            path = "/v1"
-        elif (
-            not path.endswith("/v1")
-            and not path.endswith("/v4")
-            and not path.endswith("/openai")
-        ):
-            # /v4 is used by some OpenAI-compatible providers;
-            # /openai is Gemini's OpenAI-compatible endpoint (e.g. /v1beta/openai).
-            path = f"{path}/v1"
-        return urlunsplit(parts._replace(path=path))
-
     def _extract_embedding_data(self, response) -> list:
         if isinstance(response, str):
             snippet = " ".join(response.strip().split())[:160]
@@ -101,31 +107,46 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         return data
 
     def _embedding_kwargs(self) -> dict:
-        """构建嵌入请求的可选参数"""
+        """Build optional embedding request parameters."""
         kwargs = {}
-        if "embedding_dimensions" in self.provider_config:
+        dimensions_mode = self.provider_config.get("embedding_dimensions_mode", "auto")
+        if dimensions_mode not in {"auto", "always", "never"}:
+            logger.warning(
+                f"Unknown embedding_dimensions_mode in embedding configs: '{dimensions_mode}', fallback to 'auto'."
+            )
+            dimensions_mode = "auto"
+        send_dimensions = dimensions_mode == "always"
+        if dimensions_mode == "auto":
+            api_base = _normalize_api_base(
+                self.provider_config.get(
+                    "embedding_api_base", "https://api.openai.com/v1"
+                )
+                or "https://api.openai.com/v1"
+            )
+            parsed_api_base = urlparse(api_base)
+            model = (
+                getattr(self, "model", None)
+                or self.provider_config.get("embedding_model")
+                or "text-embedding-3-small"
+            )
+            model_lower = str(model).lower()
+            model_name = model_lower.rsplit("/", 1)[-1]
+            send_dimensions = (
+                parsed_api_base.scheme == "https"
+                and parsed_api_base.hostname == "api.openai.com"
+                and parsed_api_base.path.rstrip("/") == "/v1"
+                and model_name.startswith("text-embedding-3")
+            ) or (
+                parsed_api_base.scheme == "https"
+                and parsed_api_base.hostname == "api.siliconflow.cn"
+                and model_name.startswith("qwen")
+            )
+        if send_dimensions and "embedding_dimensions" in self.provider_config:
             try:
                 kwargs["dimensions"] = int(self.provider_config["embedding_dimensions"])
             except (ValueError, TypeError):
                 logger.warning(
                     f"embedding_dimensions in embedding configs is not a valid integer: '{self.provider_config['embedding_dimensions']}', ignored."
-                )
-
-        # Fix: SiliconFlow provider does not support dimensions parameter, except for Qwen models.
-        provider_api_base = self.provider_config.get("embedding_api_base")
-        provider_id = self.provider_config.get("id", "unknown_id")
-        if (
-            provider_api_base
-            # Hard-code SiliconFlow API Base Prefix and Model Name, as it's just a temporary workaround.
-            and provider_api_base.strip().startswith("https://api.siliconflow.cn")
-            and not self.model.lower().startswith("qwen")
-        ):
-            # For SiliconFlow and Non-Qwen models, dimensions parameter is not supported. so remove it.
-            removed_dimensions = kwargs.pop("dimensions", None)
-            if removed_dimensions is not None:
-                # Log a warning message if dimensions parameter is removed.
-                logger.warning(
-                    f"dimensions not supported for model '{self.model}' of provider '{provider_id}' as SiliconFlow does not support this parameter for non-Qwen models: '{removed_dimensions}'."
                 )
         return kwargs
 

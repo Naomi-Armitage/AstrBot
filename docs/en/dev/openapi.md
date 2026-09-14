@@ -26,18 +26,21 @@ X-API-Key: abk_xxx
 - `POST /api/v1/chat`: request body must include `username`
 - `GET /api/v1/chat/sessions`: query params must include `username`
 
+The local OpenAPI schema is available at `http://localhost:6185/api/v1/openapi.json`, and the interactive docs are available at `http://localhost:6185/api/v1/docs`.
+
 ## Scope Permissions
 
-When creating an API Key, you can configure `scopes`. Each scope controls the range of accessible endpoints:
-
-| Scope | Purpose | Accessible Endpoints |
-| --- | --- | --- |
-| `chat` | Access chat capabilities and query sessions | `POST /api/v1/chat`, `GET /api/v1/chat/sessions` |
-| `config` | Retrieve available config file list | `GET /api/v1/configs` |
-| `file` | Upload attachment files and get `attachment_id` | `POST /api/v1/file` |
-| `im` | Send proactive IM messages, query bot/platform list | `POST /api/v1/im/message`, `GET /api/v1/im/bots` |
+API Keys can be configured with `scopes`. See the [API Scope–Endpoint Reference](./openapi-scopes.md) for each scope's purpose, inheritance rules, and complete endpoint list.
 
 If the API Key does not include the required scope for the target endpoint, the request will return `403 Insufficient API key scope`.
+
+- `config` is not selected by default in the WebUI and automatically includes `bot` and `provider`.
+- `config:edit_admin` and `chat:admin` must be granted explicitly and are never inherited from their parent scopes.
+- Deselecting `bot` or `provider` in the WebUI also removes the dependent `config` scope.
+
+Developer API keys currently support 11 top-level scopes and two sensitive sub-scopes. `tool`, `skills`, `kb`, and `system` are not valid developer API key scopes. Use the singular `skill` scope for `/api/v1/skills/*` endpoints.
+
+Every operation in the interactive reference also displays `Required scope: ...`; operations involving administrator capabilities additionally display `Conditional sensitive scope: ...`.
 
 ## Common Endpoints
 
@@ -48,10 +51,21 @@ Interact with AstrBot's built-in Agent. Supports plugin calls, tool calls, and o
 - `POST /api/v1/chat`: send chat message (SSE stream, server generates UUID when `session_id` is omitted)
 - `GET /api/v1/chat/sessions`: list sessions for a specific `username` with pagination
 - `GET /api/v1/configs`: list available config files
+- `POST /api/v1/file`: upload an attachment for later use in message segments
 
-**File Upload**
+**Bots and Providers**
 
-- `POST /api/v1/file`: upload attachment
+- `GET /api/v1/bots`: list bot/platform configurations
+- `POST /api/v1/bots`: create a bot/platform configuration
+- `GET /api/v1/providers`: list model provider configurations
+- `GET /api/v1/provider-sources`: list provider source configurations
+
+**Personas, Plugins, MCP, and Skills**
+
+- `GET /api/v1/personas`: list personas
+- `GET /api/v1/plugins`: list plugins
+- `GET /api/v1/mcp/servers`: list MCP servers
+- `GET /api/v1/skills`: list skills
 
 **Proactive IM Messages**
 
@@ -99,13 +113,15 @@ Supported `type` values:
 
 Notes:
 
-- `attachment_id` comes from the upload result of `POST /api/v1/file`.
+- `attachment_id` comes from an existing attachment record, or from `POST /api/v1/file` after uploading an attachment with the `file` scope.
 - `reply` cannot be the only segment; at least one content segment (e.g. `plain/image/file/...`) is required.
 - A request with only `reply` or empty content will return an error.
 
 ### `message` Usage in Chat API
 
 `POST /api/v1/chat` additionally requires `username`, with optional `session_id` (a UUID is auto-generated if omitted).
+
+`username` is a caller-declared WebChat identity used as the message sender and session owner. A key with only `chat` is rejected when the value matches any configured administrator ID and is prevented from receiving an administrator role inside the message pipeline. The sensitive `chat:admin` sub-scope explicitly permits configured administrator IDs; it does not make arbitrary usernames administrators. Integrations should still map external users to stable, application-controlled usernames.
 
 ```json
 {

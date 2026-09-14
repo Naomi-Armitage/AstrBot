@@ -11,7 +11,11 @@ from astrbot.core.computer.computer_client import get_booter, get_local_booter
 from astrbot.core.message.message_event_result import MessageChain
 
 from ..registry import builtin_tool
-from .util import check_admin_permission
+from .util import (
+    check_admin_permission,
+    is_local_runtime,
+    workspace_root_for_context,
+)
 
 _OS_NAME = platform.system()
 _SANDBOX_PYTHON_TOOL_CONFIG = {
@@ -130,6 +134,8 @@ class LocalPythonTool(FunctionTool):
     ) -> ToolExecResult:
         if permission_error := check_admin_permission(context, "Python execution"):
             return permission_error
+        if not is_local_runtime(context):
+            return "Error executing code: only local runtime is supported."
         sb = get_local_booter()
         effective_timeout = (
             min(timeout, context.tool_call_timeout)
@@ -137,10 +143,13 @@ class LocalPythonTool(FunctionTool):
             else context.tool_call_timeout
         )
         try:
+            current_workspace_root = await workspace_root_for_context(context)
+            current_workspace_root.mkdir(parents=True, exist_ok=True)
             result = await sb.python.exec(
                 code,
                 timeout=effective_timeout,
                 silent=silent,
+                cwd=str(current_workspace_root),
             )
             return await handle_result(result, context.context.event)
         except Exception as e:

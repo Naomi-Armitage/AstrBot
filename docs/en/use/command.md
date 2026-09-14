@@ -15,9 +15,11 @@ The following commands are shipped with AstrBot and loaded by default:
 - `/help`: View currently enabled commands and AstrBot version information.
 - `/sid`: View current message source information, including UMO, user ID, platform ID, message type, and session ID. This is commonly used when configuring admins, allowlists, or routing rules.
 - `/name`: Set a display alias for the current UMO, which means one concrete group or private-chat message source on a platform, so it is easier to recognize in WebUI. This command requires admin permission.
-- `/reset`: Reset the current conversation's LLM context.
+- `/reset`: Create and switch to a new conversation, just like `/new`.
 - `/stop`: Stop Agent tasks currently running in the current session.
 - `/new`: Create and switch to a new conversation.
+- `/stats`: View token usage statistics for the current conversation.
+- `/provider`: View or switch LLM Provider. This command requires admin permission.
 - `/dashboard_update`: Update AstrBot WebUI. This command requires admin permission.
 - `/set`: Set a session variable, commonly used for Agent Runner input variables such as Dify, Coze, or DashScope.
 - `/unset`: Remove a session variable.
@@ -69,27 +71,33 @@ Display rules:
 
 `/name` requires admin permission.
 
-### `/reset`
+### `/reset` and `/new`
 
-`/reset` resets the LLM context of the current session.
+`/reset` and `/new` use the same restart flow. Both command entries and their individual command management settings are retained.
 
 For AstrBot's built-in Agent Runner, it:
 
-- Stops running tasks in the current session.
-- Clears the context messages of the current conversation.
-- Notifies long-term memory to clear the current session state.
+- Marks other active events in the current session as stopped, without waiting for every task to exit.
+- Creates and selects an empty conversation, preserving previous history and inheriting the current persona.
+- Clears the current session's group context cache after the reply is sent.
 
 For third-party Agent Runners such as `dify`, `coze`, `dashscope`, and `deerflow`, it:
 
 - Stops running tasks in the current session.
 - Removes the saved third-party conversation ID for this session, so the next turn starts a new conversation.
 
+DeerFlow also attempts to delete the old remote thread. Third-party runners do not guarantee retention of previous history.
+
 Permission notes:
 
 - In private chat, regular users can use it by default.
-- In group chat with `unique_session` enabled, regular users can use it by default.
-- In group chat without `unique_session`, admin permission is required by default.
-- If command permission settings have been customized, the actual configuration takes precedence.
+- Group chats default to **Follow Conversation Isolation**: everyone can use the commands when **Isolate Conversation** is enabled and isolation is applied by the platform; otherwise, only AstrBot administrators can use them. Administrators are configured administrator IDs, not automatically detected group administrators. Platforms without isolation support retain the shared-group restriction.
+- In WebUI, open **Extensions → Handlers → Command** and select **Show System Plugin Commands**. Configure `new` and `reset` individually using **Everyone**, **Administrators Only**, **Administrators Only in Group Chats**, or **Follow Conversation Isolation**. The selected permission applies across all configuration profiles. **Follow Conversation Isolation** evaluates isolation using the incoming message's profile; the other three choices remain fixed when isolation settings change.
+- **Administrators Only** restricts both private and group chats. **Administrators Only in Group Chats** allows everyone in private chats but requires administrator permission in groups.
+- With **Isolate Conversation** disabled, the command switches the conversation for the whole group; with isolation enabled and applied, it affects only the sender's conversation. Select **Everyone** to allow regular members to use the command in shared group conversations.
+- Command disabling and renaming are also managed here.
+
+Upgrade note: commands without explicitly saved permissions default to **Follow Conversation Isolation**. Permissions saved in command management and **Isolate Conversation** settings are preserved. Select **Follow Conversation Isolation** to restore automatic permission checks. If you customized the legacy `group_unique_on`, `group_unique_off`, or `private` values under `alter_cmd.astrbot.reset`, these values are no longer read; select the desired permission in command management instead.
 
 ### `/stop`
 
@@ -101,6 +109,45 @@ For the built-in Agent Runner, `/stop` asks the Agent Runner to stop the current
 For third-party Agent Runners such as `dify`, `coze`, `dashscope`, and `deerflow`, `/stop` directly stops registered running tasks in the current session.
 
 If there are no running tasks in the current session, AstrBot will report that no task is running.
+
+### `/stats`
+
+`/stats` shows token usage statistics for the current conversation.
+
+It queries the database for all Provider call records in the current conversation and displays:
+
+- Total tokens (input + output).
+- Input tokens (cached) — input tokens that were cached by the provider and skipped for billing.
+- Input tokens (other) — input tokens that were not cached and billed normally.
+- Output tokens — tokens generated by the model.
+
+If you are not in a conversation, AstrBot will prompt you to create one with `/new`.
+
+### `/provider`
+
+`/provider` views or switches the Provider (LLM / TTS / STT) used by the current UMO.
+
+**Viewing the Provider list:**
+
+With no arguments, `/provider` lists all configured Providers grouped by LLM, TTS, and STT. Each Provider shows:
+
+- An index number for switching.
+- Provider ID and the model currently in use (LLM type).
+- Reachability status: `✅` means the connection is healthy, `❌` means a connection failure (with an error code).
+- The currently active Provider is marked with `(currently in use)` at the end.
+
+> [!NOTE]
+> Reachability checks must be enabled in WebUI under `Config -> General Config -> AI Config`, expand the "More Settings" section at the bottom, and enable "Provider Reachability Check". When disabled, reachability markers are not shown and the list loads faster.
+
+**Switching Providers:**
+
+Use `/provider <index>` to switch the current session's LLM Provider to the Provider at the given index in the list.
+
+- `/provider <index>`: Switch to the LLM Provider at the given index.
+- `/provider tts <index>`: Switch to the TTS Provider at the given index.
+- `/provider stt <index>`: Switch to the STT Provider at the given index.
+
+This command requires admin permission.
 
 ## Built-in Commands Extension
 

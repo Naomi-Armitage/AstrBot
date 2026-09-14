@@ -90,7 +90,7 @@ AstrBot 默认配置如下：
     },
     "provider_ltm_settings": {
         "group_icl_enable": False,
-        "group_message_max_cnt": 300,
+        "group_message_max_cnt": 1000,
         "image_caption": False,
         "active_reply": {
             "enable": False,
@@ -159,7 +159,7 @@ AstrBot 默认配置如下：
 
 #### `platform_settings.unique_session`
 
-是否启用会话隔离。默认为 `false`。启用后，在群组或者频道中，每个人的对话的上下文都是独立的。
+是否启用「隔离对话」。默认为 `false`。启用后，支持隔离的渠道会为每位群成员使用独立上下文；不支持隔离的渠道仍使用原有上下文。`/new` 和 `/reset` 的权限由[指令管理设置](../use/command.md)决定，默认跟随对话是否隔离。
 
 #### `platform_settings.rate_limit`
 
@@ -288,12 +288,13 @@ ID 白名单。填写后，将只处理所填写的 ID 发来的消息事件。�
 
 #### `provider_settings.websearch_provider`
 
-网页搜索提供商类型。默认为 `tavily`。目前支持 `tavily`、`bocha`、`baidu_ai_search`、`brave`。
+网页搜索提供商类型。默认为 `tavily`。目前支持 `tavily`、`bocha`、`baidu_ai_search`、`brave`、`firecrawl`。
 
 - `tavily`：使用 Tavily 搜索引擎。
 - `bocha`：使用 BoCha 搜索引擎。
 - `baidu_ai_search`：使用百度 AI Search（MCP）。
 - `brave`：使用 Brave Search API。
+- `firecrawl`：使用 Firecrawl Search API。
 
 #### `provider_settings.websearch_tavily_key`
 
@@ -306,6 +307,10 @@ BoCha 搜索引擎的 API Key 列表。使用 `bocha` 作为网页搜索提供�
 #### `provider_settings.websearch_brave_key`
 
 Brave 搜索引擎的 API Key 列表。使用 `brave` 作为网页搜索提供商时需要填写。
+
+#### `provider_settings.websearch_firecrawl_key`
+
+Firecrawl 搜索引擎的 API Key 列表。使用 `firecrawl` 作为网页搜索提供商时需要填写。
 
 #### `provider_settings.web_search_link`
 
@@ -407,17 +412,17 @@ Added in `v4.3.5`
 
 #### `provider_ltm_settings.group_icl_enable`
 
-是否启用群聊上下文感知。默认为 `false`。启用后，机器人会记录群聊中的对话内容，以便更好地理解群聊的上下文。
+是否将群聊记录注入模型上下文。默认为 `false`。启用后，机器人会暂存群聊中的对话内容，并在下一次回复时注入模型上下文。
 
 上下文的内容会被放在对话的系统提示词中。
 
 #### `provider_ltm_settings.group_message_max_cnt`
 
-群聊消息的最大记录数量。默认为 `100`。超过此数量的消息将被丢弃。
+注入上下文所保留的最大群聊消息数量。默认为 `1000`。超过此数量的消息将被丢弃。仅在群聊记录注入上下文开启时生效。
 
 #### `provider_ltm_settings.image_caption`
 
-是否记录群聊中的图片，并自动使用图像描述模型生成图片的描述文本。默认为 `false`。此配置项依赖于 `provider_settings.default_image_caption_provider_id` 的配置。请谨慎使用，因为这可能会增加大量的 API 调用和 token 开销。
+是否自动使用群聊图片转述模型生成图片描述并注入上下文。默认为 `false`。仅在群聊记录注入上下文开启时生效。请谨慎使用，因为这可能会增加大量的 API 调用和 token 开销。
 
 #### `provider_ltm_settings.active_reply`
 
@@ -543,7 +548,7 @@ AstrBot WebUI 配置。
 
 ### `trace_enable`
 
-是否启用追踪记录。默认为 `false`。启用后，AstrBot 会记录运行追踪信息，可以在管理面板的 Trace 页面查看。
+是否启用追踪记录。默认为 `false`。启用后，AstrBot 会记录运行追踪信息，可以在管理面板的 `数据` -> `追踪` 页面查看。
 
 ### `pip_install_arg`
 

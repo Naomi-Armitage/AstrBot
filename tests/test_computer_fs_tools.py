@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import zipfile
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from mcp.types import CallToolResult, ImageContent
@@ -41,6 +43,101 @@ def _make_context(
     return ContextWrapper(context=astr_ctx)
 
 
+def _make_sandbox_context(
+    *,
+    role: str = "admin",
+    umo: str = "qq:friend:user-1",
+):
+    config_holder = SimpleNamespace(
+        get_config=lambda umo=None: {
+            "provider_settings": {
+                "computer_use_require_admin": True,
+                "computer_use_runtime": "sandbox",
+            }
+        }
+    )
+    event = SimpleNamespace(
+        role=role,
+        unified_msg_origin=umo,
+        send=AsyncMock(),
+    )
+    astr_ctx = SimpleNamespace(context=config_holder, event=event)
+    return ContextWrapper(context=astr_ctx)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_file_download_handles_windows_remote_filename(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(
+        fs_tools,
+        "get_astrbot_temp_path",
+        lambda: str(temp_root),
+    )
+
+    async def _download_file(_remote_path, local_path):
+        # The local temp path keeps the original remote basename; separators
+        # are platform-native, so only the basename is asserted here.
+        assert local_path.endswith("report.txt")
+
+    booter = SimpleNamespace(download_file=AsyncMock(side_effect=_download_file))
+
+    async def _fake_get_booter(_ctx, _umo):
+        return booter
+
+    monkeypatch.setattr(fs_tools, "get_booter", _fake_get_booter)
+
+    context = _make_sandbox_context()
+    result = await fs_tools.FileDownloadTool().call(
+        context,
+        remote_path=r"C:\Users\AstrBot\report.txt",
+        also_send_to_user=True,
+    )
+
+    assert "report.txt" in result
+    sent_chain = context.context.event.send.await_args.args[0]
+    sent_file = sent_chain.chain[0]
+    assert sent_file.name == "report.txt"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_file_download_strips_trailing_remote_slash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(
+        fs_tools,
+        "get_astrbot_temp_path",
+        lambda: str(temp_root),
+    )
+
+    booter = SimpleNamespace(download_file=AsyncMock())
+
+    async def _fake_get_booter(_ctx, _umo):
+        return booter
+
+    monkeypatch.setattr(fs_tools, "get_booter", _fake_get_booter)
+
+    context = _make_sandbox_context()
+    result = await fs_tools.FileDownloadTool().call(
+        context,
+        remote_path="reports/export/",
+        also_send_to_user=True,
+    )
+
+    assert "export" in result
+    sent_chain = context.context.event.send.await_args.args[0]
+    sent_file = sent_chain.chain[0]
+    assert sent_file.name == "export"
+
+
 def _setup_local_fs_tools(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -50,10 +147,12 @@ def _setup_local_fs_tools(
     workspaces_root = tmp_path / "workspaces"
     skills_root = tmp_path / "skills"
     plugins_root = tmp_path / "plugins"
+    builtin_plugins_root = tmp_path / "builtin_plugins"
     temp_root = tmp_path / "temp"
     workspaces_root.mkdir()
     skills_root.mkdir()
     plugins_root.mkdir()
+    builtin_plugins_root.mkdir()
     temp_root.mkdir()
 
     monkeypatch.setattr(
@@ -70,6 +169,11 @@ def _setup_local_fs_tools(
         fs_tools,
         "get_astrbot_plugin_path",
         lambda: str(plugins_root),
+    )
+    monkeypatch.setattr(
+        fs_tools,
+        "get_astrbot_builtin_plugin_path",
+        lambda: str(builtin_plugins_root),
     )
     monkeypatch.setattr(
         fs_tools,
@@ -97,6 +201,13 @@ def _setup_local_fs_tools(
 
 def _make_large_text() -> str:
     return "".join(f"line-{index:05d}-{'x' * 48}\n" for index in range(6000))
+
+
+def _make_hardlink_or_skip(source, link) -> None:
+    try:
+        os.link(source, link)
+    except (AttributeError, OSError) as exc:
+        pytest.skip(f"hard links are unavailable on this filesystem: {exc}")
 
 
 def _make_epub_bytes(*, chapter_count: int = 1) -> bytes:
@@ -216,6 +327,31 @@ async def test_restricted_local_member_can_read_plugin_provided_skill(
 
 
 @pytest.mark.asyncio
+async def test_restricted_local_member_can_read_builtin_plugin_skill(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    _setup_local_fs_tools(monkeypatch, tmp_path)
+    builtin_skill = (
+        tmp_path
+        / "builtin_plugins"
+        / "astrbot"
+        / "skills"
+        / "skill-creator"
+        / "SKILL.md"
+    )
+    builtin_skill.parent.mkdir(parents=True)
+    builtin_skill.write_text("# Skill Creator\n", encoding="utf-8")
+
+    result = await fs_tools.FileReadTool().call(
+        _make_context(role="member"),
+        path=str(builtin_skill),
+    )
+
+    assert result == "# Skill Creator\n"
+
+
+@pytest.mark.asyncio
 async def test_restricted_local_member_can_read_plugin_skill_inventory_even_if_plugin_inactive(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -266,6 +402,98 @@ async def test_restricted_local_member_cannot_write_plugin_provided_skill(
     assert "Write access is restricted for this user." in result
     assert "data/plugins/*/skills" not in result
     assert plugin_skill.read_text(encoding="utf-8") == "# Demo Skill\n"
+
+
+@pytest.mark.asyncio
+async def test_restricted_local_member_cannot_modify_locally_installed_skill(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    workspace = _setup_local_fs_tools(monkeypatch, tmp_path)
+    installed_skill = tmp_path / "skills" / "demo-skill" / "SKILL.md"
+    installed_skill.parent.mkdir(parents=True)
+    installed_skill.write_text("# Demo Skill\n", encoding="utf-8")
+    workspace_skill = workspace / "skills" / "demo-skill" / "SKILL.md"
+    workspace_skill.parent.mkdir(parents=True)
+
+    context = _make_context(role="member")
+    read_result = await fs_tools.FileReadTool().call(
+        context,
+        path=str(installed_skill),
+    )
+    write_result = await fs_tools.FileWriteTool().call(
+        context,
+        path=str(installed_skill),
+        content="# Changed\n",
+    )
+    edit_result = await fs_tools.FileEditTool().call(
+        context,
+        path=str(installed_skill),
+        old="Demo",
+        new="Changed",
+    )
+    workspace_result = await fs_tools.FileWriteTool().call(
+        context,
+        path=str(workspace_skill),
+        content="# Workspace Skill\n",
+    )
+
+    assert read_result == "# Demo Skill\n"
+    assert "Write access is restricted for this user." in write_result
+    assert "Write access is restricted for this user." in edit_result
+    assert "data/skills" not in write_result
+    assert installed_skill.read_text(encoding="utf-8") == "# Demo Skill\n"
+    assert workspace_result == f"File written successfully: {workspace_skill}"
+    assert workspace_skill.read_text(encoding="utf-8") == "# Workspace Skill\n"
+
+
+@pytest.mark.asyncio
+async def test_local_admin_can_modify_locally_installed_skill(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    _setup_local_fs_tools(monkeypatch, tmp_path)
+    installed_skill = tmp_path / "skills" / "demo-skill" / "SKILL.md"
+    installed_skill.parent.mkdir(parents=True)
+
+    result = await fs_tools.FileWriteTool().call(
+        _make_context(role="admin"),
+        path=str(installed_skill),
+        content="# Demo Skill\n",
+    )
+
+    assert result == f"File written successfully: {installed_skill}"
+    assert installed_skill.read_text(encoding="utf-8") == "# Demo Skill\n"
+
+
+@pytest.mark.asyncio
+async def test_restricted_local_member_rejects_workspace_hardlink_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    workspace = _setup_local_fs_tools(monkeypatch, tmp_path)
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside_file = outside_dir / "secret.txt"
+    outside_file.write_text("outside-secret\n", encoding="utf-8")
+    hardlink_path = workspace / "linked.txt"
+    _make_hardlink_or_skip(outside_file, hardlink_path)
+
+    read_result = await fs_tools.FileReadTool().call(
+        _make_context(role="member"),
+        path="linked.txt",
+    )
+    write_result = await fs_tools.FileWriteTool().call(
+        _make_context(role="member"),
+        path="linked.txt",
+        content="changed\n",
+    )
+
+    assert "multiple hard links" in read_result
+    assert "may alias content outside allowed directories" in read_result
+    assert "multiple hard links" in write_result
+    assert "may alias content outside allowed directories" in write_result
+    assert outside_file.read_text(encoding="utf-8") == "outside-secret\n"
 
 
 def test_detect_text_encoding_allows_utf8_probe_cut_mid_character():
@@ -487,3 +715,23 @@ async def test_grep_tool_applies_result_limit(
     assert "match-2" in result
     assert "match-3" not in result
     assert "[Truncated to first 2 result groups.]" in result
+
+
+@pytest.mark.asyncio
+async def test_file_read_tool_rejects_directory_with_clear_message(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    """FileReadTool should return a helpful message when given a directory path."""
+    workspace = _setup_local_fs_tools(monkeypatch, tmp_path)
+    subdir = workspace / "my-directory"
+    subdir.mkdir()
+
+    result = await fs_tools.FileReadTool().call(
+        _make_context(),
+        path="my-directory",
+    )
+
+    assert "is a directory, not a file" in result
+    assert "my-directory" in result
+    assert "'astrbot_execute_shell'" in result

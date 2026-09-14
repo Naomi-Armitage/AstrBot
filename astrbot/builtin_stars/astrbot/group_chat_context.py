@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import json
 import random
 import uuid
 from collections import defaultdict, deque
@@ -7,7 +8,19 @@ from collections import defaultdict, deque
 from astrbot import logger
 from astrbot.api import star
 from astrbot.api.event import AstrMessageEvent
-from astrbot.api.message_components import At, Image, Plain
+from astrbot.api.message_components import (
+    At,
+    AtAll,
+    Face,
+    File,
+    Forward,
+    Image,
+    Json,
+    Plain,
+    Record,
+    Reply,
+    Video,
+)
 from astrbot.api.platform import MessageType
 from astrbot.api.provider import Provider, ProviderRequest
 from astrbot.core.agent.message import TextPart
@@ -24,7 +37,7 @@ GROUP_HISTORY_HEADER = (
     "--- BEGIN CONTEXT---\n"
 )
 GROUP_HISTORY_FOOTER = "\n--- END CONTEXT ---\n</system_reminder>"
-DEFAULT_GROUP_MESSAGE_MAX_CNT = 300
+DEFAULT_GROUP_MESSAGE_MAX_CNT = 1000
 
 
 class GroupChatContext:
@@ -81,7 +94,7 @@ class GroupChatContext:
         image_caption_prompt: str,
     ) -> str:
         if not image_caption_provider_id:
-            provider = self.context.get_using_provider()
+            provider = await self.context.get_using_provider_async()
         else:
             provider = self.context.get_provider_by_id(image_caption_provider_id)
             if not provider:
@@ -206,6 +219,37 @@ class GroupChatContext:
                         logger.error(f"获取图片描述失败: {e}")
                 else:
                     parts.append(" [Image]")
+            elif isinstance(comp, Json):
+                card_data = comp.data
+                if isinstance(card_data, dict) and isinstance(
+                    card_data.get("data"), str
+                ):
+                    try:
+                        nested_data = json.loads(card_data["data"])
+                        if isinstance(nested_data, dict):
+                            card_data = nested_data
+                    except json.JSONDecodeError:
+                        pass
+
+                detail = {}
+                if isinstance(card_data, dict):
+                    meta = card_data.get("meta")
+                    if isinstance(meta, dict):
+                        candidate = meta.get("detail_1") or meta.get("news")
+                        if isinstance(candidate, dict):
+                            detail = candidate
+
+                fields = []
+                for label, value in (
+                    ("Title", detail.get("title")),
+                    ("Description", detail.get("desc")),
+                    ("URL", detail.get("qqdocurl") or detail.get("jumpUrl")),
+                ):
+                    if isinstance(value, str) and value.strip():
+                        normalized = " ".join(value.split())
+                        fields.append(f"{label}: {_truncate_reply_text(normalized)}")
+                suffix = f": {'; '.join(fields)}" if fields else ""
+                parts.append(f" [Shared Card{suffix}]")
             elif isinstance(comp, At):
                 is_at_self = str(comp.qq) in (
                     event.get_self_id(),
@@ -214,8 +258,58 @@ class GroupChatContext:
                 if is_at_self:
                     parts.insert(1, "⚠️[DIRECTED AT YOU] ")
                 parts.append(f" [At: {comp.name}]")
+            elif isinstance(comp, Reply):
+                if comp.message_str:
+                    parts.append(
+                        f" [Quote({comp.sender_nickname}: {_truncate_reply_text(comp.message_str)})]"
+                    )
+                elif comp.chain:
+                    chain_desc = _describe_chain(comp.chain)
+                    parts.append(f" [Quote({comp.sender_nickname}: {chain_desc})]")
+                else:
+                    parts.append(" [Quote]")
 
         return "".join(parts)
+
+
+_MAX_REPLY_TEXT_LENGTH = 200
+
+
+def _describe_chain(chain: list) -> str:
+    """Summarize message chain content for quoted reply display."""
+    desc = []
+    for c in chain:
+        if isinstance(c, Plain) and getattr(c, "text", None):
+            desc.append(c.text)
+        elif isinstance(c, Image):
+            desc.append("[Image]")
+        elif isinstance(c, At):
+            name = getattr(c, "name", "") or getattr(c, "qq", "")
+            desc.append(f"[At: {name}]")
+        elif isinstance(c, Record):
+            desc.append("[Voice]")
+        elif isinstance(c, Video):
+            desc.append("[Video]")
+        elif isinstance(c, File):
+            desc.append(f"[File: {getattr(c, 'name', '') or ''}]")
+        elif isinstance(c, Forward):
+            desc.append("[Forward]")
+        elif isinstance(c, AtAll):
+            desc.append("[At: All]")
+        elif isinstance(c, Face):
+            desc.append(f"[Sticker: {getattr(c, 'id', '')}]")
+        elif isinstance(c, Reply):
+            desc.append("[Quote]")
+        else:
+            desc.append(f"[{c.__class__.__name__}]")
+    return "".join(desc) or "[Unknown]"
+
+
+def _truncate_reply_text(text: str) -> str:
+    """Truncate overly long quoted reply text."""
+    if len(text) <= _MAX_REPLY_TEXT_LENGTH:
+        return text
+    return text[:_MAX_REPLY_TEXT_LENGTH] + "..."
 
 
 def _positive_int(value, fallback: int) -> int:

@@ -2,8 +2,8 @@
 import { ref, watch, computed, onUnmounted } from "vue";
 import { useTheme } from "vuetify";
 import MarkdownIt from "markdown-it";
-import axios from "axios";
 import DOMPurify from "dompurify";
+import { pluginApi, statsApi } from "@/api/v1";
 import { useI18n } from "@/i18n/composables";
 import { copyToClipboard } from "@/utils/clipboard";
 import {
@@ -38,8 +38,6 @@ const props = defineProps({
   show: { type: Boolean, default: false },
   pluginName: { type: String, default: "" },
   repoUrl: { type: String, default: null },
-  title: { type: String, default: "" },
-  dialogWidth: { type: [Number, String], default: 800 },
   mode: {
     type: String,
     default: "readme",
@@ -271,7 +269,6 @@ const modeConfig = computed(() => {
       loading: t("core.common.changelog.loading"),
       emptyTitle: t("core.common.changelog.empty.title"),
       emptySubtitle: t("core.common.changelog.empty.subtitle"),
-      apiPath: "/api/plugin/changelog",
       showGithubButton: false,
       showRefreshButton: true,
       refreshLabel: t("core.common.readme.buttons.refresh"),
@@ -284,7 +281,6 @@ const modeConfig = computed(() => {
       loading: t("core.common.firstNotice.loading"),
       emptyTitle: t("core.common.firstNotice.empty.title"),
       emptySubtitle: t("core.common.firstNotice.empty.subtitle"),
-      apiPath: "/api/stat/first-notice",
       showGithubButton: false,
       showRefreshButton: false,
       refreshLabel: "",
@@ -296,7 +292,6 @@ const modeConfig = computed(() => {
     loading: t("core.common.readme.loading"),
     emptyTitle: t("core.common.readme.empty.title"),
     emptySubtitle: t("core.common.readme.empty.subtitle"),
-    apiPath: "/api/plugin/readme",
     showGithubButton: true,
     showRefreshButton: true,
     refreshLabel: t("core.common.readme.buttons.refresh"),
@@ -316,16 +311,14 @@ async function fetchContent() {
   isEmpty.value = false;
 
   try {
-    let params;
-    if (requiresPluginName.value) {
-      params = { name: props.pluginName };
-      if (props.mode === "changelog" && props.repoUrl) {
-        params.repo_url = props.repoUrl;
-      }
+    let res;
+    if (props.mode === "changelog") {
+      res = await pluginApi.changelog(props.pluginName);
+    } else if (props.mode === "readme") {
+      res = await pluginApi.readme(props.pluginName);
     } else if (props.mode === "first-notice") {
-      params = { locale: locale.value };
+      res = await statsApi.firstNotice(locale.value);
     }
-    const res = await axios.get(modeConfig.value.apiPath, { params });
     if (requestId !== lastRequestId.value) return;
 
     if (res.data.status === "ok") {
@@ -416,10 +409,10 @@ const showActionArea = computed(() => {
 </script>
 
 <template>
-  <v-dialog v-model="_show" :width="dialogWidth">
+  <v-dialog v-model="_show" width="800">
     <v-card>
-      <v-card-title class="d-flex justify-space-between align-center">
-        <span class="text-h2 pa-2">{{ title || modeConfig.title }}</span>
+      <v-card-title class="text-h3 pa-4 pb-0 pl-6 d-flex justify-space-between align-center">
+        <span>{{ modeConfig.title }}</span>
         <v-btn icon @click="_show = false" variant="text">
           <v-icon>mdi-close</v-icon>
         </v-btn>
@@ -429,6 +422,7 @@ const showActionArea = computed(() => {
           <v-btn
             v-if="modeConfig.showGithubButton && repoUrl"
             color="primary"
+            variant="tonal"
             prepend-icon="mdi-github"
             @click="openExternalLink(repoUrl)"
           >
@@ -437,14 +431,13 @@ const showActionArea = computed(() => {
           <v-btn
             v-if="modeConfig.showRefreshButton"
             color="secondary"
+            variant="tonal"
             prepend-icon="mdi-refresh"
             @click="fetchContent"
           >
             {{ modeConfig.refreshLabel }}
           </v-btn>
         </div>
-
-        <slot name="before-content"></slot>
 
         <div
           v-if="loading"
@@ -498,16 +491,12 @@ const showActionArea = computed(() => {
             {{ modeConfig.emptySubtitle }}
           </p>
         </div>
-
-        <slot name="after-content"></slot>
       </v-card-text>
       <v-card-actions>
-        <slot name="footer">
-          <v-spacer></v-spacer>
-          <v-btn color="primary" variant="tonal" @click="_show = false">
-            {{ t("core.common.close") }}
-          </v-btn>
-        </slot>
+        <v-spacer></v-spacer>
+        <v-btn color="primary" variant="tonal" @click="_show = false">
+          {{ t("core.common.close") }}
+        </v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>

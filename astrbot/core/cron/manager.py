@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -10,17 +11,84 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
 from astrbot import logger
+from astrbot.core.agent.runners.base import AgentState
 from astrbot.core.agent.tool import ToolSet
+from astrbot.core.config.agent_runner import resolve_context_compression_config
 from astrbot.core.cron.events import CronMessageEvent
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import CronJob
 from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.provider.entites import ProviderRequest
+from astrbot.core.utils.config_number import coerce_int_config
 from astrbot.core.utils.history_saver import persist_agent_history
 
 if TYPE_CHECKING:
     from astrbot.core.star.context import Context
+
+
+_CRONTAB_WEEKDAY_NAMES = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
+_CRONTAB_WEEKDAY_PATTERN = re.compile(r"^(?:(\*)|(\d+)(?:-(\d+))?)(?:/(\d+))?$")
+
+
+def _normalize_crontab_day_of_week(day_of_week: str) -> str:
+    """Normalize standard crontab weekdays for APScheduler.
+
+    APScheduler treats numeric weekdays as Monday=0, while standard crontab and
+    AstrBot's WebUI use Sunday=0/7. Numeric weekday fields are expanded to
+    weekday names so the scheduled day remains unambiguous.
+
+    Args:
+        day_of_week: The day-of-week field from a five-part crontab expression.
+
+    Returns:
+        A day-of-week field compatible with APScheduler.
+
+    Raises:
+        ValueError: If a numeric weekday value or step is outside the supported
+            crontab range.
+    """
+    normalized_parts: list[str] = []
+    for raw_part in day_of_week.split(","):
+        part = raw_part.strip().lower()
+        match = _CRONTAB_WEEKDAY_PATTERN.fullmatch(part)
+        if not match:
+            normalized_parts.append(part)
+            continue
+
+        wildcard, start_text, end_text, step_text = match.groups()
+        step = int(step_text or "1")
+        if step < 1:
+            raise ValueError("day_of_week step must be greater than 0")
+
+        if wildcard:
+            if step == 1:
+                normalized_parts.append("*")
+                continue
+            values = range(0, 7, step)
+        else:
+            start = int(start_text)
+            end = int(end_text) if end_text is not None else None
+            if start < 0 or start > 7 or (end is not None and (end < 0 or end > 7)):
+                raise ValueError("day_of_week values must be between 0 and 7")
+            if end is not None and start > end:
+                raise ValueError("day_of_week range start must not exceed end")
+            if end is None:
+                end = 7 if step_text else start
+            values = range(start, end + 1, step)
+
+        weekdays: list[int] = []
+        for value in values:
+            weekday = 0 if value == 7 else value
+            if weekday not in weekdays:
+                weekdays.append(weekday)
+
+        if len(weekdays) == 7:
+            normalized_parts.append("*")
+        else:
+            normalized_parts.extend(_CRONTAB_WEEKDAY_NAMES[value] for value in weekdays)
+
+    return ",".join(normalized_parts)
 
 
 class CronJobSchedulingError(Exception):
@@ -38,22 +106,28 @@ class CronJobManager:
         self._basic_handlers: dict[str, Callable[..., Any]] = {}
         self._lock = asyncio.Lock()
         self._started = False
+        # The scheduler may start early via _schedule_job; track DB sync separately.
+        self._db_synced = False
 
     async def start(self, ctx: "Context") -> None:
         self.ctx: Context = ctx  # star context
         async with self._lock:
-            if self._started:
+            if self._db_synced:
                 return
-            self.scheduler.start()
-            self._started = True
+            if not self._started:
+                self.scheduler.start()
+                self._started = True
             await self.sync_from_db()
+            self._db_synced = True
 
     async def shutdown(self) -> None:
         async with self._lock:
             if not self._started:
                 return
             self.scheduler.shutdown(wait=False)
+            await asyncio.sleep(0)
             self._started = False
+            self._db_synced = False
 
     async def sync_from_db(self) -> None:
         jobs = await self.db.list_cron_jobs()
@@ -177,7 +251,21 @@ class CronJobManager:
                     run_at = run_at.replace(tzinfo=tzinfo)
                 trigger = DateTrigger(run_date=run_at, timezone=tzinfo)
             else:
-                trigger = CronTrigger.from_crontab(job.cron_expression, timezone=tzinfo)
+                if not job.cron_expression:
+                    raise ValueError("recurring job missing cron_expression")
+                minute, hour, day, month, day_of_week = job.cron_expression.split()
+                normalized_cron_expression = " ".join(
+                    [
+                        minute,
+                        hour,
+                        day,
+                        month,
+                        _normalize_crontab_day_of_week(day_of_week),
+                    ]
+                )
+                trigger = CronTrigger.from_crontab(
+                    normalized_cron_expression, timezone=tzinfo
+                )
             self.scheduler.add_job(
                 self._run_job,
                 id=job.job_id,
@@ -200,6 +288,24 @@ class CronJobManager:
         if not aps_job or aps_job.next_run_time is None:
             return None
         return aps_job.next_run_time.astimezone(timezone.utc)
+
+    def get_next_run_time(self, job_id: str) -> datetime | None:
+        """Read the live next-run time straight from the scheduler.
+
+        The DB copy of ``next_run_time`` is written via a fire-and-forget
+        task in ``_schedule_job``, so it can still be stale/None right after
+        ``add_active_job``/``update_job`` return. The scheduler itself is
+        updated synchronously, so callers that need an immediate answer
+        should use this instead of the job row's ``next_run_time`` field.
+
+        Args:
+            job_id: The scheduled job's ID.
+
+        Returns:
+            The job's next scheduled run time in UTC, or None if the job
+            is not currently scheduled.
+        """
+        return self._get_next_run_time(job_id)
 
     async def run_job_now(self, job_id: str) -> None:
         await self._run_job(job_id, ignore_enabled=True, delete_run_once=False)
@@ -337,29 +443,47 @@ class CronJobManager:
         if cron_payload.get("origin", "tool") == "api":
             cron_event.role = "admin"
 
-        tool_call_timeout = cfg.get("provider_settings", {}).get(
-            "tool_call_timeout", 120
+        provider_settings = cfg.get("provider_settings", {}) or {}
+        persona_config = (
+            cfg.get("agent_runner", {}).get("config", {}).get("persona", {})
+        )
+        tool_call_timeout = (
+            cfg.get("agent_runner", {})
+            .get("config", {})
+            .get("misc", {})
+            .get("tool_call_timeout", 120)
+        )
+        agent_max_step = coerce_int_config(
+            cfg.get("agent_runner", {})
+            .get("config", {})
+            .get("misc", {})
+            .get("max_steps", 30),
+            default=30,
+            min_value=1,
+            field_name="agent_runner.config.misc.max_steps",
         )
         config = MainAgentBuildConfig(
             tool_call_timeout=tool_call_timeout,
-            llm_safety_mode=False,
+            fallback_provider_ids=cfg.get("agent_runner", {})
+            .get("config", {})
+            .get("model", {})
+            .get("fallback_provider_ids", []),
+            **resolve_context_compression_config(
+                cfg.get("agent_runner", {}).get("config", {}).get("compression", {})
+            ),
+            llm_safety_mode=persona_config.get("safety_mode", True),
+            safety_mode_strategy=persona_config.get(
+                "safety_mode_strategy", "system_prompt"
+            ),
             streaming_response=False,
+            computer_use_runtime=provider_settings.get("computer_use_runtime", "none"),
+            sandbox_cfg=provider_settings.get("sandbox", {}),
+            provider_settings=provider_settings,
         )
         req = ProviderRequest()
         conv = await _get_session_conv(event=cron_event, plugin_context=self.ctx)
         req.conversation = conv
-        # finetine the messages
-        context = json.loads(conv.history)
-        if context:
-            req.contexts = context
-            context_dump = req._print_friendly_context()
-            req.contexts = []
-            req.system_prompt += (
-                "\n\nBellow is you and user previous conversation history:\n"
-                f"---\n"
-                f"{context_dump}\n"
-                f"---\n"
-            )
+        req.contexts = json.loads(conv.history)
         cron_job_str = json.dumps(extras.get("cron_job", {}), ensure_ascii=False)
         req.system_prompt += PROACTIVE_AGENT_CRON_WOKE_SYSTEM_PROMPT.format(
             cron_job=cron_job_str
@@ -381,14 +505,24 @@ class CronJobManager:
             event=cron_event, plugin_context=self.ctx, config=config, req=req
         )
         if not result:
-            logger.error("Failed to build main agent for cron job.")
-            return
+            raise RuntimeError("Failed to build main agent for cron job.")
 
         runner = result.agent_runner
-        async for _ in runner.step_until_done(30):
+        async for _ in runner.step_until_done(agent_max_step):
             # agent will send message to user via using tools
             pass
         llm_resp = runner.get_final_llm_resp()
+        if runner.state == AgentState.ERROR:
+            # The run failed (e.g. malformed function call at max steps) but
+            # no exception escapes the runner; without this the job was
+            # recorded as completed with last_error=NULL and the user saw
+            # only intermediate messages (#9980).
+            detail = (
+                f": {llm_resp.completion_text}"
+                if llm_resp and llm_resp.completion_text
+                else ""
+            )
+            raise RuntimeError(f"Cron agent run ended in ERROR state{detail}")
         cron_meta = extras.get("cron_job", {}) if extras else {}
         summary_note = (
             f"[CronJob] {cron_meta.get('name') or cron_meta.get('id', 'unknown')}: {cron_meta.get('description', '')} "
