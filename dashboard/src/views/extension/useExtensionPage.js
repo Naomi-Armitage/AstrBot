@@ -132,6 +132,7 @@ export const useExtensionPage = (initialTab = "installed") => {
   // 更新全部插件确认对话框
   const updateAllConfirmDialog = reactive({
     show: false,
+    items: [],
   });
 
   // 插件更新日志对话框（复用 ReadmeDialog）
@@ -485,6 +486,23 @@ export const useExtensionPage = (initialTab = "installed") => {
     return data.filter((ext) => ext.has_update);
   });
 
+  const batchUpdateExtensions = computed(() => {
+    const data = Array.isArray(extension_data?.data) ? extension_data.data : [];
+    return data.filter(
+      (ext) =>
+        !ext.reserved && ext.updates_enabled && !ext.install_source?.implicit,
+    );
+  });
+
+  const updateAllSelectedCount = computed(
+    () => updateAllConfirmDialog.items.filter((item) => item.selected).length,
+  );
+
+  const updateAllRecommendedCount = computed(
+    () =>
+      updateAllConfirmDialog.items.filter((item) => item.recommended).length,
+  );
+
   // 方法
   const toast = (message, success) => {
     snack_message.value = message;
@@ -661,7 +679,9 @@ export const useExtensionPage = (initialTab = "installed") => {
     if (!["http:", "https:", "ssh:"].includes(parsed.protocol)) return false;
     if (!parsed.hostname || parsed.search || parsed.hash) return false;
     if (
-      ["github.com", "www.github.com"].includes(parsed.hostname.toLowerCase()) &&
+      ["github.com", "www.github.com"].includes(
+        parsed.hostname.toLowerCase(),
+      ) &&
       ["http:", "https:"].includes(parsed.protocol)
     ) {
       return false;
@@ -946,11 +966,7 @@ export const useExtensionPage = (initialTab = "installed") => {
     const ext = getInstalledExtensionByName(extension_name);
     const { repoUrl, needsSourceSelection } = buildUpdateContext(ext);
 
-    if (
-      needsSourceSelection &&
-      !options.skipSourceCheck &&
-      !repoUrl
-    ) {
+    if (needsSourceSelection && !options.skipSourceCheck && !repoUrl) {
       toast(tm("messages.updateDisabled"), "info");
       return;
     }
@@ -1019,20 +1035,70 @@ export const useExtensionPage = (initialTab = "installed") => {
     }
   };
 
-  // 确认强制更新
-  // 显示更新全部插件确认对话框
+  const selectRecommendedUpdateAllItems = () => {
+    updateAllConfirmDialog.items.forEach((item) => {
+      item.selected = item.recommended;
+    });
+  };
+
+  const selectAllUpdateAllItems = () => {
+    updateAllConfirmDialog.items.forEach((item) => {
+      item.selected = true;
+    });
+  };
+
+  const clearUpdateAllSelection = () => {
+    updateAllConfirmDialog.items.forEach((item) => {
+      item.selected = false;
+    });
+  };
+
+  // 显示批量更新插件确认对话框
   const showUpdateAllConfirm = () => {
-    if (updatableExtensions.value.length === 0) {
+    if (batchUpdateExtensions.value.length === 0) {
       toast(tm("messages.noUpdatesAvailable"), "info");
       return;
     }
+    updateAllConfirmDialog.items = batchUpdateExtensions.value
+      .slice()
+      .sort((left, right) => {
+        if (!!left.has_update !== !!right.has_update) {
+          return left.has_update ? -1 : 1;
+        }
+        return String(left.display_name || left.name).localeCompare(
+          String(right.display_name || right.name),
+          undefined,
+          { sensitivity: "base" },
+        );
+      })
+      .map((extension) => ({
+        name: extension.name,
+        displayName: extension.display_name || extension.name,
+        currentVersion: String(extension.version || "").trim(),
+        latestVersion: String(extension.online_version || "").trim(),
+        hasUpdate: !!extension.has_update,
+        recommended: !!extension.has_update,
+        sourceLabel:
+          extension.install_source?.registry_name ||
+          (extension.install_source?.install_method === "repository"
+            ? extension.install_source?.repo || extension.repo
+            : ""),
+        selected: !!extension.has_update,
+      }));
     updateAllConfirmDialog.show = true;
   };
 
-  // 确认更新全部插件
+  // 确认所选插件
   const confirmUpdateAll = () => {
+    const selectedNames = updateAllConfirmDialog.items
+      .filter((item) => item.selected)
+      .map((item) => item.name);
+    if (selectedNames.length === 0) {
+      toast(tm("messages.batchUpdateNothingSelected"), "warning");
+      return;
+    }
     updateAllConfirmDialog.show = false;
-    updateAllExtensions();
+    updateAllExtensions(selectedNames);
   };
 
   // 取消更新全部插件
@@ -1047,19 +1113,15 @@ export const useExtensionPage = (initialTab = "installed") => {
     await updateExtension(name, true);
   };
 
-  const updateAllExtensions = async () => {
+  const updateAllExtensions = async (targets = []) => {
     if (updatingAll.value) return;
-    if (updatableExtensions.value.length === 0) {
-      toast(tm("messages.noUpdatesAvailable"), "info");
-      return;
-    }
+    if (targets.length === 0) return;
     updatingAll.value = true;
     loadingDialog.title = tm("status.loading");
     loadingDialog.statusCode = 0;
     loadingDialog.result = "";
     loadingDialog.show = true;
 
-    const targets = updatableExtensions.value.map((ext) => ext.name);
     try {
       const res = await pluginApi.updateMany({
         names: targets,
@@ -1090,9 +1152,9 @@ export const useExtensionPage = (initialTab = "installed") => {
       }
 
       if (failures.length === 0) {
-        onLoadingDialogResult(1, tm("messages.updateAllSuccess"));
+        onLoadingDialogResult(1, tm("messages.batchUpdateSuccess"));
       } else {
-        const failureText = tm("messages.updateAllFailed", {
+        const failureText = tm("messages.batchUpdateFailed", {
           failed: failures.length,
           total: targets.length,
         });
@@ -1179,10 +1241,7 @@ export const useExtensionPage = (initialTab = "installed") => {
         const serverLevel = res.data.data?.log_level;
         // Preserve null as "follow global" and only skip synchronization
         // when an older server does not return the field.
-        if (
-          curr_namespace.value === pluginName &&
-          serverLevel !== undefined
-        ) {
+        if (curr_namespace.value === pluginName && serverLevel !== undefined) {
           extension_config.log_level = serverLevel;
         }
         toast(tm("messages.logLevelUpdated"), "success");
@@ -1538,10 +1597,7 @@ export const useExtensionPage = (initialTab = "installed") => {
         if (!marketPluginId || !pluginRepo || pluginRepo !== extensionRepo) {
           return;
         }
-        if (
-          currentMarketPluginId &&
-          marketPluginId !== currentMarketPluginId
-        ) {
+        if (currentMarketPluginId && marketPluginId !== currentMarketPluginId) {
           return;
         }
 
@@ -1584,7 +1640,8 @@ export const useExtensionPage = (initialTab = "installed") => {
         ? candidates.find(
             (candidate) =>
               candidate.install_method === "repository" &&
-              normalizeInstallUrl(candidate.repo).toLowerCase() === extensionRepo,
+              normalizeInstallUrl(candidate.repo).toLowerCase() ===
+                extensionRepo,
           )
         : candidates.find((candidate) => {
             return (
@@ -1593,7 +1650,8 @@ export const useExtensionPage = (initialTab = "installed") => {
                 currentRegistryUrl &&
               (!currentMarketPluginId ||
                 candidate.market_plugin_id === currentMarketPluginId) &&
-              normalizeInstallUrl(candidate.repo).toLowerCase() === extensionRepo
+              normalizeInstallUrl(candidate.repo).toLowerCase() ===
+                extensionRepo
             );
           });
 
@@ -1645,9 +1703,13 @@ export const useExtensionPage = (initialTab = "installed") => {
       return;
     }
 
-    await updateExtension(pendingUpdate.extensionName, pendingUpdate.forceUpdate, {
-      skipSourceCheck: true,
-    });
+    await updateExtension(
+      pendingUpdate.extensionName,
+      pendingUpdate.forceUpdate,
+      {
+        skipSourceCheck: true,
+      },
+    );
   };
 
   const confirmPluginSourceBinding = async () => {
@@ -2602,6 +2664,9 @@ export const useExtensionPage = (initialTab = "installed") => {
     totalPages,
     paginatedPlugins,
     updatableExtensions,
+    batchUpdateExtensions,
+    updateAllSelectedCount,
+    updateAllRecommendedCount,
     toast,
     resetLoadingDialog,
     onLoadingDialogResult,
@@ -2619,6 +2684,9 @@ export const useExtensionPage = (initialTab = "installed") => {
     closeUpdateConfirmDialog,
     confirmUpdatePlugin,
     showUpdateAllConfirm,
+    selectRecommendedUpdateAllItems,
+    selectAllUpdateAllItems,
+    clearUpdateAllSelection,
     confirmUpdateAll,
     cancelUpdateAll,
     confirmForceUpdate,

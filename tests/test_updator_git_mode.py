@@ -1,57 +1,56 @@
-"""验证源码 + git 安装下，更新器走 git pull 而非下载官方 zip（方案 A）。"""
+"""Check Git updates for AstrBot source installations."""
 
 import pytest
 
-from astrbot.core.updator import AstrBotUpdator
-from astrbot.core.zip_updator import ReleaseInfo
+from astrbot.core.updater import AstrBotUpdater
+from astrbot.core.zip_updater import ReleaseInfo
 
 
 @pytest.fixture
-def updator(tmp_path):
-    up = AstrBotUpdator()
-    # 构造一个含 .git 的目录，使 is_source_git_install() 确定性为 True
+def updater(tmp_path):
+    up = AstrBotUpdater()
     (tmp_path / ".git").mkdir()
-    up.MAIN_PATH = str(tmp_path)
+    up._main_path = str(tmp_path)
     return up
 
 
-def test_is_source_git_install(updator):
-    assert updator.is_source_git_install() is True
+def test_is_source_git_install(updater):
+    assert updater.is_source_git_install() is True
 
 
 def test_is_source_git_install_false(tmp_path):
-    up = AstrBotUpdator()
-    up.MAIN_PATH = str(tmp_path)  # 无 .git
+    up = AstrBotUpdater()
+    up._main_path = str(tmp_path)
     assert up.is_source_git_install() is False
 
 
 @pytest.mark.asyncio
-async def test_update_uses_git_pull_and_skips_zip(updator, monkeypatch):
+async def test_update_uses_git_pull_and_skips_release_downloads(updater, monkeypatch):
     calls = []
 
     async def fake_run_git(*args, timeout=180.0):
         calls.append(args)
-        if args[:2] == ("rev-parse", "--abbrev-ref"):
+        if args[:3] == ("rev-parse", "--abbrev-ref", "HEAD"):
             return 0, "Dev", ""
         return 0, "Already up to date.", ""
 
-    async def must_not_call(*a, **k):
-        raise AssertionError("git 模式下不应下载官方 zip / 拉取官方 release")
+    async def must_not_call(*args, **kwargs):
+        raise AssertionError("Git mode must not download a release archive.")
 
-    monkeypatch.setattr(updator, "_run_git", fake_run_git)
-    monkeypatch.setattr(updator, "_download_file", must_not_call)
-    monkeypatch.setattr(updator, "fetch_release_info", must_not_call)
+    monkeypatch.setattr(updater, "_run_git", fake_run_git)
+    monkeypatch.setattr(updater, "_fetch_release_info", must_not_call)
+    monkeypatch.setattr(updater, "_download_core_package", must_not_call)
 
-    await updator.update(latest=True, reboot=False)
+    await updater.update()
 
     assert ("fetch", "--prune") in calls
     assert ("pull", "--ff-only") in calls
 
 
 @pytest.mark.asyncio
-async def test_update_git_pull_not_fastforward_raises(updator, monkeypatch):
+async def test_update_git_pull_not_fastforward_raises(updater, monkeypatch):
     async def fake_run_git(*args, timeout=180.0):
-        if args[:2] == ("rev-parse", "--abbrev-ref"):
+        if args[:3] == ("rev-parse", "--abbrev-ref", "HEAD"):
             return 0, "Dev", ""
         if args[0] == "fetch":
             return 0, "", ""
@@ -59,15 +58,15 @@ async def test_update_git_pull_not_fastforward_raises(updator, monkeypatch):
             return 1, "", "Not possible to fast-forward, aborting."
         return 0, "", ""
 
-    monkeypatch.setattr(updator, "_run_git", fake_run_git)
+    monkeypatch.setattr(updater, "_run_git", fake_run_git)
     with pytest.raises(Exception, match="ff-only"):
-        await updator.update(reboot=False)
+        await updater.update()
 
 
 @pytest.mark.asyncio
-async def test_check_update_reports_behind(updator, monkeypatch):
+async def test_check_update_reports_behind(updater, monkeypatch):
     async def fake_run_git(*args, timeout=180.0):
-        if args[:2] == ("rev-parse", "--abbrev-ref"):
+        if args[:3] == ("rev-parse", "--abbrev-ref", "HEAD"):
             return 0, "Dev", ""
         if args[0] == "fetch":
             return 0, "", ""
@@ -79,16 +78,16 @@ async def test_check_update_reports_behind(updator, monkeypatch):
             return 0, "feat: something", ""
         return 0, "", ""
 
-    monkeypatch.setattr(updator, "_run_git", fake_run_git)
-    info = await updator.check_update(None, None)
+    monkeypatch.setattr(updater, "_run_git", fake_run_git)
+    info = await updater.check_update()
     assert isinstance(info, ReleaseInfo)
-    assert "落后远端 3" in info.body
+    assert "3 commits behind" in info.body
 
 
 @pytest.mark.asyncio
-async def test_check_update_uptodate_returns_none(updator, monkeypatch):
+async def test_check_update_uptodate_returns_none(updater, monkeypatch):
     async def fake_run_git(*args, timeout=180.0):
-        if args[:2] == ("rev-parse", "--abbrev-ref"):
+        if args[:3] == ("rev-parse", "--abbrev-ref", "HEAD"):
             return 0, "Dev", ""
         if args[0] == "fetch":
             return 0, "", ""
@@ -96,5 +95,5 @@ async def test_check_update_uptodate_returns_none(updator, monkeypatch):
             return 0, "0", ""
         return 0, "", ""
 
-    monkeypatch.setattr(updator, "_run_git", fake_run_git)
-    assert await updator.check_update(None, None) is None
+    monkeypatch.setattr(updater, "_run_git", fake_run_git)
+    assert await updater.check_update() is None

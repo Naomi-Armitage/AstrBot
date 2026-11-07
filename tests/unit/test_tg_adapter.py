@@ -22,12 +22,14 @@ def _build_update_with_video(video) -> SimpleNamespace:
         text=None,
         entities=None,
         voice=None,
+        audio=None,
         photo=None,
         sticker=None,
         document=None,
         video=video,
         caption=None,
         caption_entities=None,
+        quote=None,
     )
     return SimpleNamespace(message=message)
 
@@ -49,12 +51,14 @@ def _build_update_with_document(
         text=None,
         entities=None,
         voice=None,
+        audio=None,
         photo=None,
         sticker=None,
         document=document,
         video=None,
         caption=caption,
         caption_entities=caption_entities,
+        quote=None,
     )
     return SimpleNamespace(message=message)
 
@@ -78,12 +82,14 @@ def _build_text_message(
         text=text,
         entities=None,
         voice=None,
+        audio=None,
         photo=None,
         sticker=None,
         document=None,
         video=None,
         caption=None,
         caption_entities=None,
+        quote=None,
     )
 
 

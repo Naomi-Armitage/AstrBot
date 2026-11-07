@@ -16,14 +16,14 @@ const props = defineProps({
   },
 });
 
-const InstalledPluginsTab = defineAsyncComponent(
-  () => import("./extension/InstalledPluginsTab.vue"),
+const InstalledPluginsTab = defineAsyncComponent(() =>
+  import("./extension/InstalledPluginsTab.vue"),
 );
-const MarketPluginsTab = defineAsyncComponent(
-  () => import("./extension/MarketPluginsTab.vue"),
+const MarketPluginsTab = defineAsyncComponent(() =>
+  import("./extension/MarketPluginsTab.vue"),
 );
-const PluginDetailPage = defineAsyncComponent(
-  () => import("./extension/PluginDetailPage.vue"),
+const PluginDetailPage = defineAsyncComponent(() =>
+  import("./extension/PluginDetailPage.vue"),
 );
 
 const pageState = useExtensionPage(props.initialTab);
@@ -112,7 +112,8 @@ const {
   displayItemsPerPage,
   totalPages,
   paginatedPlugins,
-  updatableExtensions,
+  updateAllSelectedCount,
+  updateAllRecommendedCount,
   toggleShowReserved,
   toast,
   resetLoadingDialog,
@@ -127,6 +128,9 @@ const {
   closeUpdateConfirmDialog,
   confirmUpdatePlugin,
   showUpdateAllConfirm,
+  selectRecommendedUpdateAllItems,
+  selectAllUpdateAllItems,
+  clearUpdateAllSelection,
   confirmUpdateAll,
   cancelUpdateAll,
   confirmForceUpdate,
@@ -222,8 +226,9 @@ const selectedMarketPlugin = computed(() => {
   // fallback for legacy deep links, since multiple market entries can share
   // the same metadata name.
   const marketKeyMatch =
-    market.find((item) => getMarketPluginKey(item) === selectedPluginId.value) ||
-      null;
+    market.find(
+      (item) => getMarketPluginKey(item) === selectedPluginId.value,
+    ) || null;
   const marketNameMatch =
     market.find((item) => item.name === selectedPluginId.value) || null;
   const marketMatch = marketKeyMatch || marketNameMatch;
@@ -235,9 +240,7 @@ const selectedMarketPlugin = computed(() => {
   const repo = normalizeRepoUrl(installedPlugin.repo);
   if (!repo) return null;
 
-  return (
-    market.find((item) => normalizeRepoUrl(item?.repo) === repo) || null
-  );
+  return market.find((item) => normalizeRepoUrl(item?.repo) === repo) || null;
 });
 
 const selectedDetailPlugin = computed(() => {
@@ -294,7 +297,8 @@ const updateDialogTargetVersion = computed(() =>
 
 const updateDialogPluginLogo = computed(() => {
   const logo =
-    selectedUpdateMarketPlugin.value?.logo || selectedUpdateExtension.value?.logo;
+    selectedUpdateMarketPlugin.value?.logo ||
+    selectedUpdateExtension.value?.logo;
   return typeof logo === "string" && logo.trim() ? logo : defaultPluginIcon;
 });
 </script>
@@ -378,8 +382,8 @@ const updateDialogPluginLogo = computed(() => {
         ></div>
         <v-btn
           variant="text"
-          prepend-icon="mdi-github"
-          href="https://github.com/AstrBotDevs/AstrBot_Plugins_Collection"
+          prepend-icon="mdi-upload"
+          href="https://cloud.astrbot.app/publish"
           target="_blank"
           color="primary"
           class="text-none"
@@ -396,31 +400,31 @@ const updateDialogPluginLogo = computed(() => {
       <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
         tm("dialogs.config.title")
       }}</v-card-title>
-      <v-card-text>
-        <div
-          class="d-flex align-center justify-space-between flex-wrap"
-          style="gap: 12px"
-        >
-          <div>
-            <div class="text-subtitle-1 font-weight-medium">
-              {{ tm("dialogs.config.coreSettings.logLevel") }}
-            </div>
-            <div class="text-caption text-medium-emphasis">
-              {{ tm("dialogs.config.coreSettings.logLevelHint") }}
-            </div>
-          </div>
-          <v-select
-            :model-value="extension_config.log_level"
-            :items="logLevelItems"
-            :loading="pluginLogLevelSaving"
-            density="compact"
-            variant="outlined"
-            hide-details
-            style="max-width: 220px; min-width: 180px"
-            @update:model-value="updatePluginLogLevel"
-          ></v-select>
-        </div>
-        <v-divider class="my-4"></v-divider>
+      <v-card-text class="config-form plugin-config-form">
+        <v-row class="config-row">
+          <v-col cols="12" sm="6" class="property-info">
+            <v-list-item density="compact">
+              <v-list-item-title class="property-name">
+                {{ tm("dialogs.config.coreSettings.logLevel") }}
+              </v-list-item-title>
+              <v-list-item-subtitle class="property-hint">
+                {{ tm("dialogs.config.coreSettings.logLevelHint") }}
+              </v-list-item-subtitle>
+            </v-list-item>
+          </v-col>
+          <v-col cols="12" sm="6" class="config-input">
+            <v-select
+              :model-value="extension_config.log_level"
+              :items="logLevelItems"
+              :loading="pluginLogLevelSaving"
+              density="compact"
+              variant="outlined"
+              hide-details
+              @update:model-value="updatePluginLogLevel"
+            ></v-select>
+          </v-col>
+        </v-row>
+        <v-divider class="config-divider"></v-divider>
         <AstrBotConfig
           v-if="extension_config.metadata"
           :metadata="extension_config.metadata"
@@ -459,7 +463,9 @@ const updateDialogPluginLogo = computed(() => {
     transition="dialog-transition"
   >
     <v-card>
-      <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{ loadingDialog.title }}</v-card-title>
+      <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
+        loadingDialog.title
+      }}</v-card-title>
       <v-card-text style="max-height: calc(100vh - 200px); overflow-y: auto">
         <v-progress-linear
           v-if="loadingDialog.statusCode === 0"
@@ -469,10 +475,7 @@ const updateDialogPluginLogo = computed(() => {
         ></v-progress-linear>
 
         <v-fade-transition>
-          <div
-            v-if="loadingDialog.statusCode !== 0"
-            class="py-8 text-center"
-          >
+          <div v-if="loadingDialog.statusCode !== 0" class="py-8 text-center">
             <v-icon
               class="mb-6"
               :color="loadingDialog.statusCode === 1 ? 'success' : 'error'"
@@ -483,7 +486,9 @@ const updateDialogPluginLogo = computed(() => {
               "
               size="128"
             ></v-icon>
-            <div class="text-h4 font-weight-bold">{{ loadingDialog.result }}</div>
+            <div class="text-h4 font-weight-bold">
+              {{ loadingDialog.result }}
+            </div>
           </div>
         </v-fade-transition>
 
@@ -542,29 +547,137 @@ const updateDialogPluginLogo = computed(() => {
   />
 
   <!-- 更新全部插件确认对话框 -->
-  <v-dialog v-model="updateAllConfirmDialog.show" max-width="420">
+  <v-dialog v-model="updateAllConfirmDialog.show" max-width="860">
     <v-card class="rounded-lg">
       <v-card-title class="text-h3 pa-4 pb-0 pl-6 d-flex align-center">
         <v-icon color="warning" class="mr-2">mdi-update</v-icon>
         {{ tm("dialogs.updateAllConfirm.title") }}
       </v-card-title>
       <v-card-text>
-        <p class="text-body-1">
+        <v-alert type="info" variant="tonal" class="mb-4">
           {{
             tm("dialogs.updateAllConfirm.message", {
-              count: updatableExtensions.length,
+              count: updateAllRecommendedCount,
             })
           }}
-        </p>
+        </v-alert>
+
+        <div
+          class="d-flex align-center justify-space-between flex-wrap mb-4"
+          style="gap: 12px"
+        >
+          <div class="text-body-2 text-medium-emphasis">
+            {{
+              tm("dialogs.updateAllConfirm.selectionSummary", {
+                count: updateAllSelectedCount,
+                total: updateAllConfirmDialog.items.length,
+              })
+            }}
+          </div>
+          <div class="d-flex align-center flex-wrap" style="gap: 8px">
+            <v-btn
+              size="small"
+              variant="tonal"
+              color="warning"
+              @click="selectRecommendedUpdateAllItems"
+            >
+              {{
+                tm("dialogs.updateAllConfirm.selectRecommended", {
+                  count: updateAllRecommendedCount,
+                })
+              }}
+            </v-btn>
+            <v-btn
+              size="small"
+              variant="tonal"
+              @click="selectAllUpdateAllItems"
+            >
+              {{ tm("dialogs.updateAllConfirm.selectAll") }}
+            </v-btn>
+            <v-btn size="small" variant="text" @click="clearUpdateAllSelection">
+              {{ tm("dialogs.updateAllConfirm.clearSelection") }}
+            </v-btn>
+          </div>
+        </div>
+
+        <div
+          v-if="updateAllConfirmDialog.items.length === 0"
+          class="text-medium-emphasis"
+        >
+          {{ tm("dialogs.updateAllConfirm.empty") }}
+        </div>
+        <div
+          v-else
+          style="max-height: 55vh; overflow-y: auto; padding-right: 8px"
+        >
+          <div
+            v-for="item in updateAllConfirmDialog.items"
+            :key="item.name"
+            class="d-flex align-center mb-2 pa-3 border rounded-sm"
+            style="gap: 12px"
+          >
+            <v-checkbox-btn
+              v-model="item.selected"
+              color="primary"
+              class="flex-shrink-0"
+            />
+            <div class="min-width-0 flex-grow-1">
+              <div class="d-flex align-center flex-wrap" style="gap: 8px">
+                <span class="text-body-1 font-weight-medium">{{
+                  item.displayName
+                }}</span>
+                <v-chip
+                  v-if="item.hasUpdate"
+                  size="small"
+                  color="warning"
+                  variant="tonal"
+                >
+                  {{ tm("messages.hasUpdate") }}
+                </v-chip>
+              </div>
+              <div
+                v-if="item.displayName !== item.name"
+                class="text-caption text-medium-emphasis"
+              >
+                {{ item.name }}
+              </div>
+              <div class="d-flex align-center flex-wrap mt-1" style="gap: 8px">
+                <v-chip size="small" variant="outlined">
+                  {{ tm("dialogs.updateAllConfirm.currentVersionLabel") }}:
+                  {{ item.currentVersion || tm("status.unknown") }}
+                </v-chip>
+                <v-chip
+                  v-if="item.latestVersion"
+                  size="small"
+                  variant="outlined"
+                >
+                  {{ tm("dialogs.updateAllConfirm.latestVersionLabel") }}:
+                  {{ item.latestVersion }}
+                </v-chip>
+                <span
+                  v-if="item.sourceLabel"
+                  class="text-caption text-medium-emphasis"
+                >
+                  {{ item.sourceLabel }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
       </v-card-text>
       <v-card-actions class="pa-4">
         <v-spacer></v-spacer>
         <v-btn variant="text" @click="cancelUpdateAll">{{
           tm("buttons.cancel")
         }}</v-btn>
-        <v-btn color="warning" variant="tonal" @click="confirmUpdateAll">{{
-          tm("dialogs.updateAllConfirm.confirm")
-        }}</v-btn>
+        <v-btn
+          color="warning"
+          variant="tonal"
+          :disabled="updateAllSelectedCount === 0"
+          @click="confirmUpdateAll"
+        >
+          {{ tm("dialogs.updateAllConfirm.confirm") }}
+        </v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
@@ -644,10 +757,18 @@ const updateDialogPluginLogo = computed(() => {
       </v-card-text>
       <v-card-actions>
         <v-spacer></v-spacer>
-        <v-btn color="grey" variant="text" @click="cancelInstallOnVersionWarning">
+        <v-btn
+          color="grey"
+          variant="text"
+          @click="cancelInstallOnVersionWarning"
+        >
           {{ tm("dialogs.versionSupport.cancel") }}
         </v-btn>
-        <v-btn color="warning" variant="tonal" @click="continueInstallIgnoringVersionWarning">
+        <v-btn
+          color="warning"
+          variant="tonal"
+          @click="continueInstallIgnoringVersionWarning"
+        >
           {{ tm("dialogs.versionSupport.confirm") }}
         </v-btn>
       </v-card-actions>
@@ -767,10 +888,7 @@ const updateDialogPluginLogo = computed(() => {
             {{ tm("dialogs.install.repositorySecurityWarning") }}
           </v-alert>
 
-          <ProxySelector
-            v-if="installUsesGithubArchiveSource"
-            class="mt-4"
-          />
+          <ProxySelector v-if="installUsesGithubArchiveSource" class="mt-4" />
         </div>
 
         <template v-else>
@@ -1229,10 +1347,7 @@ const updateDialogPluginLogo = computed(() => {
             {{ tm("dialogs.install.repositorySecurityWarning") }}
           </v-alert>
 
-          <ProxySelector
-            v-if="updateUsesGithubArchiveSource"
-            class="mt-4"
-          />
+          <ProxySelector v-if="updateUsesGithubArchiveSource" class="mt-4" />
         </div>
       </v-card-text>
       <v-card-actions>
@@ -1240,11 +1355,7 @@ const updateDialogPluginLogo = computed(() => {
         <v-btn color="grey" variant="text" @click="closeUpdateConfirmDialog">
           {{ tm("buttons.cancel") }}
         </v-btn>
-        <v-btn
-          color="primary"
-          variant="tonal"
-          @click="confirmUpdatePlugin"
-        >
+        <v-btn color="primary" variant="tonal" @click="confirmUpdatePlugin">
           {{ tm("dialogs.update.confirm") }}
         </v-btn>
       </v-card-actions>
@@ -1275,6 +1386,10 @@ const updateDialogPluginLogo = computed(() => {
 </template>
 
 <style scoped>
+.plugin-config-form > :deep(.config-section) {
+  display: none;
+}
+
 .extension-page {
   margin: 0 auto;
   max-width: 1200px;
@@ -1362,3 +1477,5 @@ const updateDialogPluginLogo = computed(() => {
   background-color: rgb(var(--v-theme-mcpCardBg));
 }
 </style>
+
+<style scoped src="@/styles/config-form.css"></style>

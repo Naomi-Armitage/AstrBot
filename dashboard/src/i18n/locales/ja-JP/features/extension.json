@@ -47,7 +47,7 @@
     "viewRepo": "リポジトリ",
     "openPages": "Pages",
     "openPage": "開く",
-    "openWebui": "プラグイン UI を開く",
+    "openView": "ビューを開く",
     "close": "閉じる",
     "save": "保存",
     "saveAndClose": "保存して閉じる",
@@ -155,7 +155,7 @@
     },
     "showFullName": "正式名称",
     "devDocs": "プラグイン開発ドキュメント",
-    "submitRepo": "プラグインリポジトリを登録",
+    "submitRepo": "プラグインを登録",
     "customSource": "カスタムプラグインソース",
     "source": "プラグインソース",
     "availableSources": "利用可能なソース",
@@ -255,9 +255,16 @@
       "confirm": "強制更新"
     },
     "updateAllConfirm": {
-      "title": "すべてのプラグインを更新",
-      "message": "{count} 個のプラグインをすべて更新しますか？この操作には時間がかかる場合があります。",
-      "confirm": "すべて更新"
+      "title": "プラグインの一括更新",
+      "message": "更新が検出された {count} 個のプラグインを選択済みです。更新元が設定された他のプラグインも選択できます。",
+      "selectionSummary": "{total} 個中 {count} 個を選択",
+      "selectRecommended": "おすすめを選択 ({count})",
+      "selectAll": "すべて選択",
+      "clearSelection": "選択解除",
+      "empty": "一括更新できるプラグインはありません。",
+      "currentVersionLabel": "現在のバージョン",
+      "latestVersionLabel": "最新バージョン",
+      "confirm": "選択したプラグインを更新"
     },
     "sourceBinding": {
       "title": "プラグインソースを変更",
@@ -294,6 +301,9 @@
     "supportedFormats": ".zip 形式のプラグインファイルに対応しています",
     "updateAllSuccess": "更新可能なプラグインをすべて更新しました",
     "updateAllFailed": "{total} 個中 {failed} 個のプラグインを更新できませんでした：",
+    "batchUpdateNothingSelected": "一括更新を開始する前に、プラグインを 1 つ以上選択してください。",
+    "batchUpdateSuccess": "選択したプラグインを更新しました。",
+    "batchUpdateFailed": "選択したプラグインのうち {total} 個中 {failed} 個を更新できませんでした：",
     "noUpdatesAvailable": "現在、更新可能なプラグインはありません",
     "updateDisabled": "このプラグインには利用可能なインストール元またはリポジトリ URL がないため、更新や再インストールはできません",
     "changeSourceDisabled": "このプラグインには利用可能なリポジトリ URL がないため、プラグインソースを変更できません",
@@ -306,8 +316,8 @@
     "enterJsonUrl": "プラグイン一覧の JSON データを返す URL を入力してください",
     "pluginNotFound": "プラグインが見つかりません",
     "pluginDisabled": "このプラグインは無効です。ページにアクセスする前に有効化してください。",
-    "pluginPageNotFound": "プラグインページが見つかりません",
-    "pluginPageLoadFailed": "プラグインページの読み込みに失敗しました",
+    "pluginViewNotFound": "プラグインビューが見つかりません",
+    "pluginViewLoadFailed": "プラグインビューの読み込みに失敗しました",
     "missingMarketPluginId": "有効なプラグイン識別子がないため、このプラグインマーケットのソースからインストールできません",
     "sourceBindSuccess": "プラグインソースを更新しました",
     "validatingPlugin": "プラグインを検証中…",
@@ -321,6 +331,8 @@
     "enterUrl": "プラグインリポジトリの URL を入力"
   },
   "skills": {
+    "searchPlaceholder": "スキルを検索…",
+    "noSearchResult": "一致するスキルが見つかりません",
     "modeLocal": "ローカルスキル",
     "modeNeo": "Neo スキル",
     "actions": "操作",

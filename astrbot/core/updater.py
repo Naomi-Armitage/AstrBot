@@ -100,6 +100,112 @@ class AstrBotUpdater(_RepoZipUpdater):
             return None
         return f"{base_url.rstrip('/')}/{version}/source.zip"
 
+    def is_source_git_install(self) -> bool:
+        """Return whether AstrBot is installed from a Git working tree."""
+        return (Path(self._main_path) / ".git").exists()
+
+    async def _run_git(
+        self,
+        *args: str,
+        timeout: float = 180.0,
+    ) -> tuple[int, str, str]:
+        """Run Git in the AstrBot source directory."""
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                "-C",
+                self._main_path,
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "Git executable was not found; source installation cannot be updated."
+            ) from exc
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout,
+            )
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            process.kill()
+            await process.communicate()
+            raise RuntimeError(f"Git {' '.join(args)} timed out.") from exc
+
+        return (
+            process.returncode or 0,
+            stdout.decode("utf-8", "replace").strip(),
+            stderr.decode("utf-8", "replace").strip(),
+        )
+
+    async def _current_git_branch(self) -> str:
+        code, branch, _ = await self._run_git(
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
+            timeout=15,
+        )
+        return branch if code == 0 else ""
+
+    async def _update_via_git(self) -> None:
+        branch = await self._current_git_branch()
+        logger.info(
+            "Updating AstrBot from the current Git branch %s", branch or "unknown"
+        )
+
+        code, stdout, stderr = await self._run_git("fetch", "--prune")
+        if code != 0:
+            raise RuntimeError(f"Git fetch failed: {stderr or stdout}")
+
+        code, stdout, stderr = await self._run_git("pull", "--ff-only")
+        if code != 0:
+            raise RuntimeError(
+                "Git pull --ff-only failed; local changes or divergent history may "
+                f"prevent a fast-forward: {stderr or stdout}"
+            )
+        logger.info("Git update completed: %s", stdout)
+
+    async def _check_update_via_git(self) -> ReleaseInfo | None:
+        branch = await self._current_git_branch()
+        if not branch:
+            return None
+
+        code, _, _ = await self._run_git("fetch", "--prune", timeout=60)
+        if code != 0:
+            return None
+
+        code, count, _ = await self._run_git(
+            "rev-list",
+            "--count",
+            "HEAD..@{u}",
+            timeout=15,
+        )
+        if code != 0 or not count.isdigit() or int(count) <= 0:
+            return None
+
+        _, remote_head, _ = await self._run_git(
+            "rev-parse",
+            "--short",
+            "@{u}",
+            timeout=15,
+        )
+        _, subject, _ = await self._run_git(
+            "log",
+            "-1",
+            "--pretty=%s",
+            "@{u}",
+            timeout=15,
+        )
+        return ReleaseInfo(
+            version=f"{branch}@{remote_head}",
+            body=(
+                f"Git branch {branch} is {count} commits behind its remote. "
+                f"Latest: {subject}"
+            ),
+        )
+
     async def check_update(
         self,
         consider_prerelease: bool = True,
@@ -112,6 +218,8 @@ class AstrBotUpdater(_RepoZipUpdater):
         Returns:
             The newer release, or None when the current version is up to date.
         """
+        if self.is_source_git_install():
+            return await self._check_update_via_git()
         return await self._check_update(
             self._release_api,
             VERSION,
@@ -141,7 +249,7 @@ class AstrBotUpdater(_RepoZipUpdater):
         proxy: str = "",
         progress_callback: UpdateProgressCallback | None = None,
     ) -> None:
-        """Download, validate, and apply matching Core and Dashboard packages.
+        """Update the current source branch or apply Core and Dashboard packages.
 
         Args:
             version: Release tag or commit hash. None selects the latest release.
@@ -200,6 +308,27 @@ class AstrBotUpdater(_RepoZipUpdater):
                 45 + int(float(payload.get("percent") or 0) * 45),
                 payload,
             )
+
+        if self.is_source_git_install():
+            if os.environ.get("ASTRBOT_CLI") or os.environ.get("ASTRBOT_LAUNCHER"):
+                raise RuntimeError(
+                    "AstrBot launched by CLI or launcher must be upgraded with "
+                    "its package manager."
+                )
+            await emit_progress(
+                "core",
+                "running",
+                "Fetching the current source branch...",
+                0,
+            )
+            await self._update_via_git()
+            await emit_progress(
+                "core",
+                "done",
+                "The current source branch was updated.",
+                92,
+            )
+            return
 
         target_version = version
         target_release = None

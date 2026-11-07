@@ -1,13 +1,11 @@
-from astrbot.core.zip_updator import RepoZipUpdator
+from astrbot.core.repository import GitHubRepository
 
 
 def test_parse_github_url_supports_branch_names_with_slashes():
-    updator = RepoZipUpdator()
-
-    author, repo, branch = updator.parse_github_url(
+    repository = GitHubRepository.parse(
         "https://github.com/example/my_plugin/tree/codex/custom-update-branch"
     )
 
-    assert author == "example"
-    assert repo == "my_plugin"
-    assert branch == "codex/custom-update-branch"
+    assert repository.owner == "example"
+    assert repository.name == "my_plugin"
+    assert repository.branch == "codex/custom-update-branch"

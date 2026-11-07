@@ -1,4 +1,5 @@
 import asyncio
+import mimetypes
 import os
 import re
 import sys
@@ -10,8 +11,14 @@ from apscheduler.events import EVENT_JOB_ERROR
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import BotCommand, Update
 from telegram.constants import ChatType
-from telegram.error import Forbidden, InvalidToken, NetworkError
-from telegram.ext import ApplicationBuilder, ContextTypes, ExtBot, filters
+from telegram.error import BadRequest, Forbidden, InvalidToken, NetworkError
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    ContextTypes,
+    ExtBot,
+    filters,
+)
 from telegram.ext import MessageHandler as TelegramMessageHandler
 
 import astrbot.api.message_components as Comp
@@ -27,6 +34,11 @@ from astrbot.api.platform import (
     register_platform_adapter,
 )
 from astrbot.core.platform.astr_message_event import MessageSesion
+from astrbot.core.platform.button_interaction import (
+    BUTTON_ACTION_EXPIRED_MESSAGE,
+    ButtonActionExpiredError,
+    decode_button_callback,
+)
 from astrbot.core.star.filter.command import CommandFilter
 from astrbot.core.star.filter.command_group import CommandGroupFilter
 from astrbot.core.star.star import star_map
@@ -145,6 +157,7 @@ class TelegramPlatformAdapter(Platform):
             filters=filters.ALL,
             callback=self.message_handler,
         )
+        self.application.add_handler(CallbackQueryHandler(self.callback_query_handler))
         self.application.add_handler(message_handler)
         self.client = self.application.bot
         logger.debug(f"Telegram base url: {self.client.base_url}")
@@ -447,6 +460,87 @@ class TelegramPlatformAdapter(Platform):
         if abm:
             await self.handle_msg(abm)
 
+    async def callback_query_handler(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Convert a Telegram callback query into a button interaction event.
+
+        Args:
+            update: Telegram update containing the callback query.
+            context: Telegram callback context.
+        """
+        query = update.callback_query
+        if query is None:
+            return
+
+        action_id = None
+        data = None
+        try:
+            if isinstance(query.data, str):
+                action_id, data = decode_button_callback(query.data)
+        except ButtonActionExpiredError:
+            try:
+                await query.answer(text=BUTTON_ACTION_EXPIRED_MESSAGE, show_alert=True)
+            except Exception as exc:
+                logger.warning("Failed to send Telegram button expiry notice: %s", exc)
+            return
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            await query.answer()
+        except Exception as exc:
+            logger.warning("Failed to answer Telegram callback query: %s", exc)
+
+        if action_id is None:
+            logger.debug("Ignoring a Telegram callback query not created by AstrBot.")
+            return
+
+        source_message = query.message
+        chat = source_message.chat if source_message else update.effective_chat
+        if chat is None:
+            logger.warning("Received a Telegram callback query without a chat.")
+            return
+
+        message = AstrBotMessage()
+        message.session_id = str(chat.id)
+        if chat.type == ChatType.PRIVATE:
+            message.type = MessageType.FRIEND_MESSAGE
+        else:
+            message.type = MessageType.GROUP_MESSAGE
+            message.group_id = str(chat.id)
+            if (
+                source_message is not None
+                and getattr(source_message, "is_topic_message", False)
+                and getattr(source_message, "message_thread_id", None)
+            ):
+                message.group_id += f"#{source_message.message_thread_id}"
+                message.session_id = message.group_id
+
+        source_message_id = (
+            str(source_message.message_id) if source_message is not None else None
+        )
+        message.message_id = str(query.id)
+        message.sender = MessageMember(
+            str(query.from_user.id),
+            query.from_user.username or "Unknown",
+        )
+        message.self_id = str(context.bot.username)
+        message.raw_message = update
+        message.message_str = action_id
+        message.message = [
+            Comp.ButtonInteraction(
+                action_id=action_id,
+                data=data,
+                interaction_id=str(query.id),
+                source_message_id=source_message_id,
+                callback_data=query.data,
+            )
+        ]
+        await self.handle_msg(message)
+
     async def convert_message(
         self,
         update: Update,
@@ -467,15 +561,26 @@ class TelegramPlatformAdapter(Platform):
             if not update.message:
                 return
             if update.message.caption:
-                message.message_str = update.message.caption
+                caption_utf16 = update.message.caption.encode("utf-16-le")
+                # Insert from the end to preserve Telegram's UTF-16 offsets.
+                for entity in reversed(update.message.caption_entities or ()):
+                    if entity.type == "text_link" and entity.url:
+                        end = (entity.offset + entity.length) * 2
+                        caption_utf16 = (
+                            caption_utf16[:end]
+                            + f" ({entity.url})".encode("utf-16-le")
+                            + caption_utf16[end:]
+                        )
+                message.message_str = caption_utf16.decode("utf-16-le")
                 message.message.append(Comp.Plain(message.message_str))
             if update.message.caption and update.message.caption_entities:
                 for entity in update.message.caption_entities:
                     if entity.type == "mention":
-                        name = update.message.caption[
-                            entity.offset + 1 : entity.offset + entity.length
-                        ]
-                        message.message.append(Comp.At(qq=name, name=name))
+                        name = update.message.parse_caption_entity(entity)[1:]
+                        mention = Comp.At(qq=name, name=name)
+                        if name.lower() == message.self_id.lower():
+                            mention.qq = message.self_id
+                        message.message.append(mention)
 
         message = AstrBotMessage()
         message.session_id = str(update.message.chat.id)
@@ -555,7 +660,7 @@ class TelegramPlatformAdapter(Platform):
             return None
         message.sender = MessageMember(
             str(_from_user.id),
-            _from_user.username or "Unknown",
+            _from_user.username or _from_user.full_name or "Unknown",
         )
         message.self_id = str(context.bot.username)
         message.raw_message = update
@@ -579,6 +684,33 @@ class TelegramPlatformAdapter(Platform):
                 reply_chain = reply_abm.message
                 reply_message_str = reply_abm.message_str
                 if quote_text:
+                    quote_utf16 = quote_text.encode("utf-16-le")
+                    original = update.message.reply_to_message
+                    original_utf16 = (original.text or original.caption or "").encode(
+                        "utf-16-le"
+                    )
+                    start = update.message.quote.position * 2
+                    end = start + len(quote_utf16)
+                    # Telegram omits links from quote entities; use the matched source.
+                    if original_utf16[start:end] == quote_utf16:
+                        for entity in reversed(
+                            original.entities or original.caption_entities or ()
+                        ):
+                            link_start = entity.offset * 2
+                            link_end = (entity.offset + entity.length) * 2
+                            if (
+                                entity.type == "text_link"
+                                and entity.url
+                                and link_start < end
+                                and link_end > start
+                            ):
+                                offset = min(link_end, end) - start
+                                quote_utf16 = (
+                                    quote_utf16[:offset]
+                                    + f" ({entity.url})".encode("utf-16-le")
+                                    + quote_utf16[offset:]
+                                )
+                    quote_text = quote_utf16.decode("utf-16-le")
                     reply_chain = [Comp.Plain(quote_text)]
                     reply_message_str = quote_text
 
@@ -598,12 +730,35 @@ class TelegramPlatformAdapter(Platform):
         if update.message.text:
             # 处理文本消息
             plain_text = update.message.text
+            if update.message.entities:
+                # Entity offsets refer to the original text in UTF-16 code units.
+                text_utf16 = plain_text.encode("utf-16-le")
+                text_parts = []
+                last_end = 0
+                for entity in update.message.entities:
+                    if entity.type == "mention":
+                        name = update.message.parse_entity(entity)[1:]
+                        mention = Comp.At(qq=name, name=name)
+                        if name.lower() == message.self_id.lower():
+                            mention.qq = message.self_id
+                            text_parts.append(text_utf16[last_end : entity.offset * 2])
+                            last_end = (entity.offset + entity.length) * 2
+                        message.message.append(mention)
+                    elif entity.type == "text_link" and entity.url:
+                        end = (entity.offset + entity.length) * 2
+                        text_parts.append(text_utf16[last_end:end])
+                        text_parts.append(f" ({entity.url})".encode("utf-16-le"))
+                        last_end = end
+                text_parts.append(text_utf16[last_end:])
+                plain_text = b"".join(text_parts).decode("utf-16-le")
+
             if (
                 message.type == MessageType.GROUP_MESSAGE
                 and update.message
                 and update.message.reply_to_message
                 and update.message.reply_to_message.from_user
                 and update.message.reply_to_message.from_user.id == context.bot.id
+                and not plain_text.lstrip().startswith("/")
             ):
                 plain_text2 = f"/@{context.bot.username} " + plain_text
                 plain_text = plain_text2
@@ -613,24 +768,10 @@ class TelegramPlatformAdapter(Platform):
                 command_parts = plain_text.split(" ", 1)
                 if "@" in command_parts[0]:
                     command, bot_name = command_parts[0].split("@")
-                    if bot_name == self.client.username:
+                    if bot_name == message.self_id:
                         plain_text = command + (
                             f" {command_parts[1]}" if len(command_parts) > 1 else ""
                         )
-
-            if update.message.entities:
-                for entity in update.message.entities:
-                    if entity.type == "mention":
-                        name = plain_text[
-                            entity.offset + 1 : entity.offset + entity.length
-                        ]
-                        message.message.append(Comp.At(qq=name, name=name))
-                        # 如果mention是当前bot则移除；否则保留
-                        if name.lower() == context.bot.username.lower():
-                            plain_text = (
-                                plain_text[: entity.offset]
-                                + plain_text[entity.offset + entity.length :]
-                            )
 
             if plain_text:
                 message.message.append(Comp.Plain(plain_text))
@@ -700,22 +841,48 @@ class TelegramPlatformAdapter(Platform):
                 message.message.append(Comp.Plain(sticker_text))
 
         elif update.message.document:
-            file = await update.message.document.get_file()
-            file_name = update.message.document.file_name or uuid.uuid4().hex
+            document = update.message.document
+            file = await document.get_file()
+            file_name = document.file_name or uuid.uuid4().hex
             file_path = file.file_path
             if file_path is None:
                 logger.warning(
                     f"Telegram document file_path is None, cannot save the file {file_name}.",
                 )
             else:
-                message.message.append(
-                    Comp.File(file=file_path, name=file_name, url=file_path)
+                mime_type = getattr(document, "mime_type", None)
+                is_image = bool(
+                    isinstance(mime_type, str) and mime_type.startswith("image/")
                 )
+                if not isinstance(mime_type, str) or mime_type in {
+                    "",
+                    "application/octet-stream",
+                }:
+                    guessed_mime_type, _ = mimetypes.guess_type(file_name)
+                    is_image = bool(
+                        guessed_mime_type
+                        and guessed_mime_type.startswith("image/")
+                    )
+                if is_image:
+                    message.message.append(Comp.Image(file=file_path, url=file_path))
+                else:
+                    message.message.append(
+                        Comp.File(file=file_path, name=file_name, url=file_path)
+                    )
                 _apply_caption()
 
         elif update.message.video:
-            file = await update.message.video.get_file()
-            file_name = update.message.video.file_name or uuid.uuid4().hex
+            video = update.message.video
+            file_name = video.file_name or uuid.uuid4().hex
+            try:
+                file = await video.get_file()
+            except BadRequest as exc:
+                if "file is too big" not in str(exc).lower():
+                    raise
+                placeholder = f"[Video: {file_name} ({exc})]"
+                message.message.append(Comp.Plain(placeholder))
+                message.message_str = placeholder
+                return message
             file_path = file.file_path
             if file_path is None:
                 logger.warning(

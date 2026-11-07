@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
+import yaml
 from deprecated import deprecated
 
 from astrbot.api.platform import AstrBotMessage, MessageMember, MessageType
@@ -272,12 +273,30 @@ class StarTools:
 
             metadata = star_map.get(module.__name__, None)
 
-            if not metadata:
+            plugin_name = metadata.name if metadata else None
+            module_file = getattr(module, "__file__", None)
+            if not plugin_name and module_file:
+                for plugin_root in Path(module_file).resolve().parents:
+                    for filename in ("metadata.yaml", "metadata.yml"):
+                        metadata_path = plugin_root / filename
+                        if not metadata_path.is_file():
+                            continue
+                        try:
+                            file_metadata = yaml.safe_load(
+                                metadata_path.read_text(encoding="utf-8")
+                            )
+                        except (OSError, yaml.YAMLError):
+                            continue
+                        if isinstance(file_metadata, dict):
+                            plugin_name = file_metadata.get("name")
+                        break
+                    if plugin_name:
+                        break
+
+            if not plugin_name:
                 raise RuntimeError(
                     f"Unable to resolve metadata for module {module.__name__}",
                 )
-
-            plugin_name = metadata.name
 
         if not plugin_name:
             raise ValueError("Unable to resolve plugin name")

@@ -1,3 +1,4 @@
+import re
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
@@ -13,8 +14,7 @@ from ..register import register_provider_adapter
 def _normalize_api_base(api_base: str | None) -> str:
     """Normalize embedding API base URL to ensure proper endpoint path.
 
-    Handles various endpoint formats and ensures compatibility with
-    OpenAI-compatible providers that use /v1, /v4, or /openai paths.
+    Handles versioned OpenAI-compatible endpoints and Gemini's OpenAI endpoint.
     """
     normalized = str(api_base or "").strip()
     if not normalized:
@@ -24,13 +24,8 @@ def _normalize_api_base(api_base: str | None) -> str:
     path = parts.path.rstrip("/").removesuffix("/embeddings")
     if not path:
         path = "/v1"
-    elif (
-        not path.endswith("/v1")
-        and not path.endswith("/v4")
-        and not path.endswith("/openai")
-    ):
-        # /v4 is used by some OpenAI-compatible providers;
-        # /openai is Gemini's OpenAI-compatible endpoint (e.g. /v1beta/openai).
+    elif not re.search(r"/v\d+$|/v\d+beta/openai$", path):
+        # Keep explicit API versions and Gemini's /v1beta/openai endpoint intact.
         path = f"{path}/v1"
     return urlunsplit(parts._replace(path=path))
 

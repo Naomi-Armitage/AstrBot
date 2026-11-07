@@ -33,7 +33,7 @@ def test_get_classes_falls_back_to_star_subclass_without_plugin_suffix():
         star_map.update(original_star_map)
 
 
-def test_get_data_dir_falls_back_to_metadata_yaml(tmp_path: Path):
+def test_get_data_dir_falls_back_to_metadata_yaml(tmp_path: Path, monkeypatch):
     plugin_root = tmp_path / "demo_plugin"
     plugin_root.mkdir()
     (plugin_root / "metadata.yaml").write_text(
@@ -53,6 +53,11 @@ def test_get_data_dir_falls_back_to_metadata_yaml(tmp_path: Path):
 
     module = ModuleType("data.plugins.demo_plugin.main")
     module.__file__ = str(plugin_root / "main.py")
+    data_path = tmp_path / "data"
+    monkeypatch.setattr(
+        "astrbot.core.star.star_tools.get_astrbot_data_path",
+        lambda: str(data_path),
+    )
     original_star_map = dict(star_map)
     star_map.clear()
     star_map[module.__name__] = StarMetadata(module_path=module.__name__)
