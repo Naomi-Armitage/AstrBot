@@ -91,6 +91,7 @@ const {
   totalPages,
   paginatedPlugins,
   updatableExtensions,
+  batchUpdateExtensions,
   toast,
   resetLoadingDialog,
   onLoadingDialogResult,
@@ -246,6 +247,17 @@ const togglePinnedExtension = (extension) => {
             {{ tm("tabs.market") }}
           </v-tab>
         </v-tabs>
+
+        <v-btn
+          color="warning"
+          variant="tonal"
+          prepend-icon="mdi-update"
+          :loading="updatingAll"
+          :disabled="updatingAll || batchUpdateExtensions.length === 0"
+          @click="showUpdateAllConfirm"
+        >
+          {{ tm("dialogs.updateAllConfirm.title") }}
+        </v-btn>
 
         <div class="installed-search-wrap d-flex align-center ml-auto">
           <v-text-field
@@ -474,16 +486,13 @@ const togglePinnedExtension = (extension) => {
               </span>
               <span v-else>
                 {{
-                  selectedSourceBindingCandidate.version ||
-                  tm("status.unknown")
+                  selectedSourceBindingCandidate.version || tm("status.unknown")
                 }}
               </span>
             </div>
           </div>
           <v-alert
-            v-if="
-              selectedSourceBindingCandidate?.validation_status === 'error'
-            "
+            v-if="selectedSourceBindingCandidate?.validation_status === 'error'"
             type="error"
             variant="tonal"
             density="compact"
@@ -505,7 +514,8 @@ const togglePinnedExtension = (extension) => {
               sourceBindingDialog.loading ||
               sourceBindingDialog.candidates.length === 0 ||
               !sourceBindingDialog.selectedKey ||
-              (selectedSourceBindingCandidate?.install_method === 'repository' &&
+              (selectedSourceBindingCandidate?.install_method ===
+                'repository' &&
                 selectedSourceBindingCandidate?.validation_status !== 'valid')
             "
             @click="confirmPluginSourceBinding"
@@ -545,21 +555,6 @@ const togglePinnedExtension = (extension) => {
             ></i>
           </span>
         </button>
-      </template>
-    </v-tooltip>
-
-    <v-tooltip :text="tm('buttons.updateAll')" location="left">
-      <template v-slot:activator="{ props }">
-        <v-btn
-          v-bind="props"
-          color="darkprimary"
-          icon="mdi-update"
-          size="x-large"
-          variant="elevated"
-          class="update-all-fab"
-          :loading="updatingAll"
-          @click="showUpdateAllConfirm"
-        />
       </template>
     </v-tooltip>
   </v-tab-item>
@@ -630,21 +625,6 @@ const togglePinnedExtension = (extension) => {
 }
 
 .fab-button:hover {
-  transform: translateY(-4px) scale(1.05);
-  box-shadow: 0 12px 20px rgba(var(--v-theme-primary), 0.4);
-}
-
-.update-all-fab {
-  position: fixed;
-  right: 52px;
-  bottom: 124px;
-  z-index: 10000;
-  border-radius: 16px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-}
-
-.update-all-fab:hover {
   transform: translateY(-4px) scale(1.05);
   box-shadow: 0 12px 20px rgba(var(--v-theme-primary), 0.4);
 }

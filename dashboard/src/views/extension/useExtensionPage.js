@@ -133,6 +133,8 @@ export const useExtensionPage = (initialTab = "installed") => {
   const updateAllConfirmDialog = reactive({
     show: false,
     items: [],
+    loadingSources: false,
+    saving: false,
   });
 
   // 插件更新日志对话框（复用 ReadmeDialog）
@@ -488,10 +490,15 @@ export const useExtensionPage = (initialTab = "installed") => {
 
   const batchUpdateExtensions = computed(() => {
     const data = Array.isArray(extension_data?.data) ? extension_data.data : [];
-    return data.filter(
-      (ext) =>
-        !ext.reserved && ext.updates_enabled && !ext.install_source?.implicit,
-    );
+    return data.filter((ext) => {
+      const source = ext.install_source || {};
+      const installMethod = String(source.install_method || "")
+        .trim()
+        .toLowerCase();
+      const hasUsableSource = ["market", "repository"].includes(installMethod);
+      const hasRepo = Boolean(String(ext.repo || source.repo || "").trim());
+      return !ext.reserved && (hasUsableSource || hasRepo);
+    });
   });
 
   const updateAllSelectedCount = computed(
@@ -1054,7 +1061,7 @@ export const useExtensionPage = (initialTab = "installed") => {
   };
 
   // 显示批量更新插件确认对话框
-  const showUpdateAllConfirm = () => {
+  const showUpdateAllConfirm = async () => {
     if (batchUpdateExtensions.value.length === 0) {
       toast(tm("messages.noUpdatesAvailable"), "info");
       return;
@@ -1083,22 +1090,97 @@ export const useExtensionPage = (initialTab = "installed") => {
           (extension.install_source?.install_method === "repository"
             ? extension.install_source?.repo || extension.repo
             : ""),
+        requiresSourceSelection:
+          extension.install_source?.implicit === true ||
+          !["market", "repository"].includes(
+            String(extension.install_source?.install_method || "")
+              .trim()
+              .toLowerCase(),
+          ),
+        sourceCandidates: [],
+        sourceKey: "",
         selected: !!extension.has_update,
       }));
     updateAllConfirmDialog.show = true;
+    updateAllConfirmDialog.loadingSources = true;
+    try {
+      await Promise.all(
+        updateAllConfirmDialog.items
+          .filter((item) => item.requiresSourceSelection)
+          .map(async (item) => {
+            const extension = getInstalledExtensionByName(item.name);
+            const { candidates, selectedKey } =
+              await resolvePluginSourceCandidates(extension);
+            item.sourceCandidates = candidates;
+            item.sourceKey = selectedKey;
+          }),
+      );
+    } catch (error) {
+      console.warn("Failed to load plugin sources for batch update:", error);
+    } finally {
+      updateAllConfirmDialog.loadingSources = false;
+    }
   };
 
   // 确认所选插件
-  const confirmUpdateAll = () => {
-    const selectedNames = updateAllConfirmDialog.items
-      .filter((item) => item.selected)
-      .map((item) => item.name);
-    if (selectedNames.length === 0) {
+  const confirmUpdateAll = async () => {
+    const selectedItems = updateAllConfirmDialog.items.filter(
+      (item) => item.selected,
+    );
+    if (selectedItems.length === 0) {
       toast(tm("messages.batchUpdateNothingSelected"), "warning");
       return;
     }
+
+    const sourceSelections = selectedItems
+      .filter((item) => item.requiresSourceSelection)
+      .map((item) => ({
+        item,
+        candidate: item.sourceCandidates.find(
+          (candidate) => candidate.key === item.sourceKey,
+        ),
+      }));
+    if (sourceSelections.some(({ candidate }) => !candidate)) {
+      toast(tm("messages.updateDisabled"), "warning");
+      return;
+    }
+
+    updateAllConfirmDialog.saving = true;
+    try {
+      for (const { item, candidate } of sourceSelections) {
+        if (candidate.install_method === "repository") {
+          await validatePluginRepo({
+            url: candidate.repo,
+            proxy: getRepositoryProxy(candidate.repo),
+          });
+        }
+        const payload =
+          candidate.install_method === "repository"
+            ? { install_method: "repository" }
+            : {
+                install_method: "market",
+                registry_url: candidate.registry_url,
+                market_plugin_id: candidate.market_plugin_id,
+              };
+        const response = await pluginApi.bindSource(item.name, payload);
+        if (response.data.status === "error") {
+          throw new Error(
+            response.data.message || tm("messages.operationFailed"),
+          );
+        }
+      }
+    } catch (error) {
+      toast(
+        error.response?.data?.message || error.message || String(error),
+        "error",
+      );
+      return;
+    } finally {
+      updateAllConfirmDialog.saving = false;
+    }
+
     updateAllConfirmDialog.show = false;
-    updateAllExtensions(selectedNames);
+    updateAllExtensions(selectedItems.map((item) => item.name));
   };
 
   // 取消更新全部插件

@@ -1319,8 +1319,9 @@ export const pluginApi = {
   },
   update(pluginId: string, body?: OpenConfig) {
     return typed<OpenConfig>(
-      openApiV1.updatePlugins({
-        body: { plugin_id: pluginId, ...(body || {}) } as any,
+      openApiV1.updatePlugin({
+        path: { plugin_id: pluginId },
+        body: body as any,
       }),
     );
   },

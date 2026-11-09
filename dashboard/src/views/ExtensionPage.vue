@@ -610,6 +610,12 @@ const updateDialogPluginLogo = computed(() => {
           v-else
           style="max-height: 55vh; overflow-y: auto; padding-right: 8px"
         >
+          <v-progress-linear
+            v-if="updateAllConfirmDialog.loadingSources"
+            indeterminate
+            color="primary"
+            class="mb-3"
+          />
           <div
             v-for="item in updateAllConfirmDialog.items"
             :key="item.name"
@@ -620,6 +626,7 @@ const updateDialogPluginLogo = computed(() => {
               v-model="item.selected"
               color="primary"
               class="flex-shrink-0"
+              :disabled="updateAllConfirmDialog.loadingSources"
             />
             <div class="min-width-0 flex-grow-1">
               <div class="d-flex align-center flex-wrap" style="gap: 8px">
@@ -655,25 +662,46 @@ const updateDialogPluginLogo = computed(() => {
                   {{ item.latestVersion }}
                 </v-chip>
                 <span
-                  v-if="item.sourceLabel"
+                  v-if="item.sourceLabel && !item.requiresSourceSelection"
                   class="text-caption text-medium-emphasis"
                 >
                   {{ item.sourceLabel }}
                 </span>
               </div>
+              <v-select
+                v-if="item.requiresSourceSelection"
+                v-model="item.sourceKey"
+                :items="item.sourceCandidates"
+                item-title="registry_name"
+                item-value="key"
+                :label="tm('dialogs.sourceBinding.selectTitle')"
+                density="compact"
+                variant="outlined"
+                hide-details
+                class="mt-2"
+                style="max-width: 360px"
+                :disabled="updateAllConfirmDialog.loadingSources"
+              />
             </div>
           </div>
         </div>
       </v-card-text>
       <v-card-actions class="pa-4">
         <v-spacer></v-spacer>
-        <v-btn variant="text" @click="cancelUpdateAll">{{
-          tm("buttons.cancel")
-        }}</v-btn>
+        <v-btn
+          variant="text"
+          :disabled="updateAllConfirmDialog.saving"
+          @click="cancelUpdateAll"
+          >{{ tm("buttons.cancel") }}</v-btn
+        >
         <v-btn
           color="warning"
           variant="tonal"
-          :disabled="updateAllSelectedCount === 0"
+          :loading="updateAllConfirmDialog.saving"
+          :disabled="
+            updateAllSelectedCount === 0 ||
+            updateAllConfirmDialog.loadingSources
+          "
           @click="confirmUpdateAll"
         >
           {{ tm("dialogs.updateAllConfirm.confirm") }}

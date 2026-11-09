@@ -3354,6 +3354,42 @@ async def test_plugin_service_update_github_source_uses_plugin_repo(
 
 
 @pytest.mark.asyncio
+async def test_v1_plugin_update_by_id_dispatches_single_plugin(
+    asgi_app: FastAPI,
+    asgi_client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    plugin_service = asgi_app.state.services.plugins
+    calls = []
+
+    async def update_plugin(payload):
+        calls.append(("single", payload))
+        return None, "更新成功。"
+
+    async def update_all_plugins(payload):
+        calls.append(("batch", payload))
+        return {"results": []}, "批量更新完成。"
+
+    monkeypatch.setattr(plugin_service, "update_plugin", update_plugin)
+    monkeypatch.setattr(plugin_service, "update_all_plugins", update_all_plugins)
+
+    response = await asgi_client.post(
+        "/api/v1/plugins/astrbot_plugin_demo/update",
+        json={"proxy": "https://proxy.example"},
+        headers=_jwt_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert calls == [
+        (
+            "single",
+            {"name": "astrbot_plugin_demo", "proxy": "https://proxy.example"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_v1_plugin_update_all_hides_internal_exceptions(
     asgi_client: httpx.AsyncClient,
 ):

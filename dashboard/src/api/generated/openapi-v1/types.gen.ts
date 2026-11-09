@@ -575,6 +575,7 @@ export type PluginSourceRequest = {
 
 export type PluginUpdateRequest = {
     reinstall?: boolean;
+    proxy?: string;
 };
 
 export type PluginUploadInstallRequest = {
